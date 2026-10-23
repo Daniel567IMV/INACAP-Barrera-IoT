@@ -1,0 +1,6 @@
+{
+  "name": "INACAP Barrera IoT",
+  "description": "Sistema de Control y Monitoreo de Barrera de Estacionamiento Inteligente (IoT/OT) bajo ISO/IEC 27400 con ESP32, Bluetooth RFCOMM y Sockets TCP",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

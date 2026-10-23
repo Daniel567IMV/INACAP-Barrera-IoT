@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Base pedestal shadow/plate -->
+    <path
+        android:fillColor="#E30613"
+        android:pathData="M24,74h22v6h-22z" />
+    <!-- Barrier control housing pillar -->
+    <path
+        android:fillColor="#E30613"
+        android:pathData="M27,44c0,-3.3 2.7,-6 6,-6h4c3.3,0 6,2.7 6,6v30h-16z" />
+    <!-- Barrier arm angled upward (45 deg smart gate) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M36,52 L76,28 L80,35 L40,59 Z" />
+    <!-- Red stripes on barrier arm -->
+    <path
+        android:fillColor="#E30613"
+        android:pathData="M46,46 L54,41.2 L58,48.2 L50,53 Z" />
+    <path
+        android:fillColor="#E30613"
+        android:pathData="M62,36.4 L70,31.6 L74,38.6 L66,43.4 Z" />
+    <!-- Pivot bolt -->
+    <path
+        android:fillColor="#1D1D1B"
+        android:pathData="M35,51m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0" />
+    <!-- Ultrasonic sensor waves on right -->
+    <path
+        android:fillColor="#4CAF50"
+        android:pathData="M62,62c3.5,3.5 3.5,9.2 0,12.7l-2.8,-2.8c2,-2 2,-5.1 0,-7.1L62,62z" />
+    <path
+        android:fillColor="#4CAF50"
+        android:pathData="M68,56c6.8,6.8 6.8,17.9 0,24.7l-2.8,-2.8c5.3,-5.3 5.3,-13.8 0,-19.1L68,56z" />
+    <path
+        android:fillColor="#4CAF50"
+        android:pathData="M74,50c10.2,10.2 10.2,26.6 0,36.8l-2.8,-2.8c8.6,-8.6 8.6,-22.6 0,-31.2L74,50z" />
+</vector>

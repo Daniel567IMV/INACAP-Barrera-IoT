@@ -1,0 +1,26 @@
+<resources>
+    <string name="app_name">INACAP Barrera IoT</string>
+    <string name="institutional_subtitle">Sistema de Control y Monitoreo OT • ISO/IEC 27400</string>
+    <string name="login_title">Acceso Seguro OT/IoT</string>
+    <string name="login_subtitle">Autenticación Cifrada AES256-GCM + SHA-256 con Salt</string>
+    <string name="username_label">Operador / ID Institucional</string>
+    <string name="password_label">Clave de Operador</string>
+    <string name="keep_session_label">Mantener sesión cifrada activa (AES256-GCM)</string>
+    <string name="btn_login">Iniciar Sesión Segura</string>
+    <string name="btn_register_update">Registrar / Actualizar Credencial</string>
+    <string name="btn_logout">Cerrar Sesión</string>
+    <string name="permissions_denied_title">Permisos Inalámbricos Requeridos (ISO 27400)</string>
+    <string name="permissions_denied_desc">Se requieren permisos de Bluetooth (SCAN/CONNECT o Ubicación en Android ≤11) para enlazar con el ESP32 o el segundo teléfono Android sin interrupciones.</string>
+    <string name="btn_retry_permissions">Solicitar Permisos</string>
+    <string name="btn_open_settings">Configuración del Sistema</string>
+    <string name="role_control_station">Estación de Control (Cliente)</string>
+    <string name="role_sensor_node">Nodo Sensor / Simulador OT</string>
+    <string name="status_free">LIBRE</string>
+    <string name="status_occupied">OCUPADO</string>
+    <string name="barrier_open">ABIERTA (90°)</string>
+    <string name="barrier_closed">CERRADA (0°)</string>
+    <string name="cmd_open_barrier">ABRIR BARRERA (90°)</string>
+    <string name="cmd_close_barrier">CERRAR BARRERA (0°)</string>
+    <string name="cmd_auto_mode">MODO AUTOMÁTICO</string>
+    <string name="cmd_request_status">SOLICITAR ESTADO</string>
+</resources>
