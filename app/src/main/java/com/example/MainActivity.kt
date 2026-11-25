@@ -131,6 +131,7 @@ fun SmartBarrierApp(
                 onSendValidatedAngle = mainViewModel::sendValidatedBarrierAngleInput,
                 onSendValidatedCapacity = mainViewModel::sendValidatedCapacityUpdate,
                 onSendProtocolFaultProbe = mainViewModel::sendProtocolFaultProbe,
+                onFlushEsp32Buffer = mainViewModel::sendFlushBufferCommand,
                 onSensorDistanceSliderChange = mainViewModel::onSimulatedSensorDistanceChanged,
                 onSyncPendingRoom = mainViewModel::syncPendingRoomRecords,
                 onClearSyncedRoom = mainViewModel::clearSyncedRoomHistory,

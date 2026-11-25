@@ -113,6 +113,7 @@ fun DashboardScreen(
     onSendValidatedAngle: (String) -> Unit,
     onSendValidatedCapacity: (capacity: String, freeSlots: String) -> Unit,
     onSendProtocolFaultProbe: (String) -> Unit,
+    onFlushEsp32Buffer: () -> Unit,
     onSensorDistanceSliderChange: (Float) -> Unit,
     onSyncPendingRoom: () -> Unit,
     onClearSyncedRoom: () -> Unit,
@@ -278,7 +279,8 @@ fun DashboardScreen(
                             onRequestStatus = onRequestStatus,
                             onSendValidatedAngle = onSendValidatedAngle,
                             onSendValidatedCapacity = onSendValidatedCapacity,
-                            onSendProtocolFaultProbe = onSendProtocolFaultProbe
+                            onSendProtocolFaultProbe = onSendProtocolFaultProbe,
+                            onFlushEsp32Buffer = onFlushEsp32Buffer
                         )
                     }
                 } else {
@@ -591,7 +593,8 @@ private fun ControlStationActuatorCard(
     onRequestStatus: () -> Unit,
     onSendValidatedAngle: (String) -> Unit,
     onSendValidatedCapacity: (capacity: String, freeSlots: String) -> Unit,
-    onSendProtocolFaultProbe: (String) -> Unit
+    onSendProtocolFaultProbe: (String) -> Unit,
+    onFlushEsp32Buffer: () -> Unit
 ) {
     var angleInput by rememberSaveable { mutableStateOf("90") }
     var capacityInput by rememberSaveable(uiState.totalCapacity) {
@@ -808,6 +811,11 @@ private fun ControlStationActuatorCard(
                     modifier = Modifier.testTag("probe_unknown_cmd")
                 )
                 AssistChip(
+                    onClick = { onSendProtocolFaultProbe("OUT_OF_RANGE") },
+                    label = { Text("Probar ERR: Fuera de rango (180°)") },
+                    modifier = Modifier.testTag("probe_out_of_range")
+                )
+                AssistChip(
                     onClick = { onSendProtocolFaultProbe("UNAUTHORIZED") },
                     label = { Text("Probar ERR: Token inválido") },
                     modifier = Modifier.testTag("probe_unauthorized")
@@ -816,6 +824,11 @@ private fun ControlStationActuatorCard(
                     onClick = { onSendProtocolFaultProbe("CORRUPT_JSON") },
                     label = { Text("Probar Trama JSON corrupta") },
                     modifier = Modifier.testTag("probe_corrupt_json")
+                )
+                AssistChip(
+                    onClick = onFlushEsp32Buffer,
+                    label = { Text("Sincronizar Buffer ESP32") },
+                    modifier = Modifier.testTag("btn_flush_esp32_buffer")
                 )
             }
         }

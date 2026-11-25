@@ -198,6 +198,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (connState is ConnectionState.Connected) {
                     // Sincronización automática de registros pendientes Room (`synced = false`) al reconectar
                     syncPendingRoomRecords()
+                    if (_uiState.value.selectedRole == DeviceRole.CONTROL_STATION &&
+                        _uiState.value.selectedTransport != TransportMode.LOCAL_LOOPBACK
+                    ) {
+                        requestEsp32BufferFlushOnReconnect()
+                    }
                 }
             }
         }
@@ -279,8 +284,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         when (val parsed = ProtocolFrameParser.parseLine(rawLine)) {
             is ParsedIncomingFrame.Telemetry -> {
                 val frame = parsed.frame
-                lastTelemetryReceivedEpochMs = frame.timestamp
                 val formattedTs = LocalTimeFormatter.formatFull(frame.timestamp)
+
+                if (frame.buffered) {
+                    val nvsKey = "ESP_NVS_${frame.seq}_${frame.uptimeSec}_${frame.dist}"
+                    val inserted = syncRepository.recordEvent(
+                        SyncRecordEntity(
+                            uniqueEventKey = nvsKey,
+                            recordType = "TELEMETRIA_NVS",
+                            payloadJson = frame.toJsonLine().trim(),
+                            distanceCm = frame.dist,
+                            freeSlots = frame.plazasLibres,
+                            totalCapacity = frame.capacidadTotal,
+                            parkingStatus = frame.estado,
+                            barrierAngle = frame.barrera,
+                            operationMode = frame.modo,
+                            createdAtMillis = frame.timestamp,
+                            synced = true,
+                            syncedAtMillis = System.currentTimeMillis(),
+                            syncTarget = "ESP32_NVS_FLUSH"
+                        )
+                    )
+                    appendAuditLog(
+                        category = "SYNC",
+                        rawFrame = "[NVS BUFFER #${frame.seq} @ $formattedTs] dist=${frame.dist}cm " +
+                            "plazas=${frame.plazasLibres}/${frame.capacidadTotal} estado=${frame.estado} " +
+                            "barrera=${frame.barrera}°" + if (!inserted) " (deduplicado)" else "",
+                        isAck = true
+                    )
+                    return
+                }
+
+                lastTelemetryReceivedEpochMs = System.currentTimeMillis()
                 val (line1, line2) = frame.toLcdLines()
 
                 _uiState.update { state ->
@@ -720,6 +755,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         validateAndDispatchCommand(cmd = "REQ_STATUS", value = -1, modo = _uiState.value.operationMode)
     }
 
+    fun sendFlushBufferCommand() {
+        validateAndDispatchCommand(cmd = "FLUSH_BUFFER", value = -1, modo = _uiState.value.operationMode)
+    }
+
+    private fun requestEsp32BufferFlushOnReconnect() {
+        viewModelScope.launch(Dispatchers.IO) {
+            delay(300L)
+            val token = activeRawSessionToken
+            if (_uiState.value.connectionState is ConnectionState.Connected && token.isNotBlank()) {
+                val flushCmd = CommandFrame(
+                    cmd = "FLUSH_BUFFER",
+                    value = -1,
+                    modo = _uiState.value.operationMode,
+                    token = token
+                )
+                val sent = connectionManager.sendFrame(flushCmd.toJsonLine())
+                if (sent) {
+                    appendAuditLog("SYNC", "TX -> FLUSH_BUFFER solicitado automáticamente al reconectar.")
+                }
+            }
+        }
+    }
+
     fun sendValidatedBarrierAngleInput(angleText: String) {
         val parsed = angleText.trim().toIntOrNull()
         if (parsed == null) {
@@ -859,6 +917,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     value = 90,
                     modo = "MANUAL",
                     token = "BAD"
+                ).toJsonLine()
+
+                "OUT_OF_RANGE" -> CommandFrame(
+                    cmd = "SET_BARRERA",
+                    value = 180,
+                    modo = "MANUAL",
+                    token = activeRawSessionToken
                 ).toJsonLine()
 
                 else -> "{\"type\":\"TELEMETRY\",\"dist\":15,\"estado\":\"LIBRE\"" // JSON truncado deliberado
@@ -1065,6 +1130,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "SET_PLAZAS" -> {
                 newFree = command.value.coerceIn(0, newCap)
                 "Plazas libres desde entrada ajustadas a $newFree/$newCap"
+            }
+            "SET_UMBRAL" -> {
+                "Umbral de detección ajustado a ${command.value.coerceIn(5, 150)} cm"
+            }
+            "FLUSH_BUFFER" -> {
+                "Buffer NVS sincronizado sin lecturas pendientes"
             }
             "SYNC_RECORD" -> {
                 "Registro offline confirmado en nodo receptor"

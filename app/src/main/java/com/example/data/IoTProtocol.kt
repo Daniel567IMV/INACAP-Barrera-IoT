@@ -93,7 +93,13 @@ data class TelemetryFrame(
     val plazasLibres: Int = 11,  // Plazas disponibles desde la entrada
     val capacidadTotal: Int = 12,// Capacidad total del estacionamiento
     val crc: String = "OK",
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val buffered: Boolean = false,
+    val seq: Long = 0L,
+    val ageSec: Long = 0L,
+    val uptimeSec: Long = 0L,
+    val pendingNvs: Int = 0,
+    val umbralCm: Int = 10
 ) {
     fun toJsonLine(): String {
         val safeCap = capacidadTotal.coerceIn(MIN_CAPACITY, MAX_CAPACITY)
@@ -144,6 +150,8 @@ data class TelemetryFrame(
         const val MAX_DISTANCE_CM = 400
         const val MIN_BARRIER_ANGLE = 0
         const val MAX_BARRIER_ANGLE = 90
+        const val MIN_UMBRAL_CM = 5
+        const val MAX_UMBRAL_CM = 150
         const val MIN_CAPACITY = 1
         const val MAX_CAPACITY = 200
 
@@ -194,10 +202,12 @@ data class CommandFrame(
         val ALLOWED_COMMANDS = setOf(
             "SET_BARRERA",
             "SET_MODO",
+            "SET_UMBRAL",
             "SET_CAPACIDAD",
             "SET_PLAZAS",
             "REQ_STATUS",
-            "SYNC_RECORD"
+            "SYNC_RECORD",
+            "FLUSH_BUFFER"
         )
 
         /**
@@ -232,6 +242,15 @@ data class CommandFrame(
                     val m = modo.trim().uppercase(Locale.US)
                     if (m != "AUTO" && m != "MANUAL") {
                         CommandValidationResult.Invalid("Modo inválido '$modo'. Solo se permite AUTO o MANUAL.")
+                    } else {
+                        CommandValidationResult.Valid
+                    }
+                }
+                "SET_UMBRAL" -> {
+                    if (value !in TelemetryFrame.MIN_UMBRAL_CM..TelemetryFrame.MAX_UMBRAL_CM) {
+                        CommandValidationResult.Invalid(
+                            "Umbral de distancia fuera de rango ($value cm). Debe estar entre 5 y 150 cm."
+                        )
                     } else {
                         CommandValidationResult.Valid
                     }
@@ -345,32 +364,34 @@ object ProtocolFrameParser {
         return try {
             val obj = JSONObject(clean)
             val explicitType = obj.optString("type", "").uppercase(Locale.US)
+            val statusType = obj.optString("status", "").uppercase(Locale.US)
+            val effectiveType = explicitType.ifEmpty { statusType }
             val now = System.currentTimeMillis()
 
             when {
-                explicitType == "ACK" -> {
+                effectiveType == "ACK" -> {
                     ParsedIncomingFrame.Ack(
                         AckFrame(
                             cmd = obj.optString("cmd", "UNKNOWN"),
                             reqId = obj.optString("reqId", "-"),
-                            detail = obj.optString("detail", "Comando ejecutado"),
+                            detail = obj.optString("detail", obj.optString("msg", "Comando ejecutado")),
                             timestamp = now
                         )
                     )
                 }
 
-                explicitType == "ERR" -> {
+                effectiveType == "ERR" -> {
                     ParsedIncomingFrame.Err(
                         ErrFrame(
                             code = obj.optString("code", "ERR_GENERAL"),
                             reqId = obj.optString("reqId", "-"),
-                            detail = obj.optString("detail", "Error reportado por nodo OT"),
+                            detail = obj.optString("detail", obj.optString("msg", "Error reportado por nodo OT")),
                             timestamp = now
                         )
                     )
                 }
 
-                explicitType == "CMD" || obj.has("cmd") -> {
+                effectiveType == "CMD" || obj.has("cmd") -> {
                     val cmd = obj.optString("cmd", "").trim()
                     if (cmd.isEmpty()) {
                         return ParsedIncomingFrame.Corrupt(clean, "Campo 'cmd' faltante en trama de comando.")
@@ -387,7 +408,7 @@ object ProtocolFrameParser {
                     )
                 }
 
-                explicitType == "TELEMETRY" || obj.has("dist") -> {
+                effectiveType == "TELEMETRY" || obj.has("dist") -> {
                     if (!obj.has("dist")) {
                         return ParsedIncomingFrame.Corrupt(clean, "Trama de telemetría sin campo obligatorio 'dist'.")
                     }
@@ -413,11 +434,31 @@ object ProtocolFrameParser {
                     if (modo != "AUTO" && modo != "MANUAL") {
                         return ParsedIncomingFrame.Corrupt(clean, "Modo de operación inválido: '$modo'.")
                     }
-                    val capTotal = obj.optInt("capacidadTotal", 12)
-                        .coerceIn(TelemetryFrame.MIN_CAPACITY, TelemetryFrame.MAX_CAPACITY)
+                    val capRaw = when {
+                        obj.has("capacidadTotal") -> obj.optInt("capacidadTotal", 12)
+                        obj.has("total_plazas") -> obj.optInt("total_plazas", 12)
+                        else -> 12
+                    }
+                    val capTotal = capRaw.coerceIn(TelemetryFrame.MIN_CAPACITY, TelemetryFrame.MAX_CAPACITY)
                     val defaultFree = if (estado == "OCUPADO") (capTotal - 1).coerceAtLeast(0) else capTotal
-                    val plazasLibres = obj.optInt("plazasLibres", defaultFree).coerceIn(0, capTotal)
+                    val freeRaw = when {
+                        obj.has("plazasLibres") -> obj.optInt("plazasLibres", defaultFree)
+                        obj.has("plazas_libres") -> obj.optInt("plazas_libres", defaultFree)
+                        else -> defaultFree
+                    }
+                    val plazasLibres = freeRaw.coerceIn(0, capTotal)
                     val crc = obj.optString("crc", "OK")
+                    val isBuffered = obj.optBoolean("buffered", false)
+                    val seq = obj.optLong("seq", 0L)
+                    val ageSec = obj.optLong("age_s", 0L).coerceAtLeast(0L)
+                    val uptimeSec = obj.optLong("uptime_s", 0L).coerceAtLeast(0L)
+                    val pendingNvs = obj.optInt("pendingNvs", 0).coerceAtLeast(0)
+                    val umbralCm = obj.optInt("umbral", 10).coerceIn(TelemetryFrame.MIN_UMBRAL_CM, TelemetryFrame.MAX_UMBRAL_CM)
+                    val frameTimestamp = if (isBuffered && ageSec > 0L) {
+                        (now - ageSec * 1000L).coerceAtLeast(0L)
+                    } else {
+                        now
+                    }
 
                     ParsedIncomingFrame.Telemetry(
                         TelemetryFrame(
@@ -428,7 +469,13 @@ object ProtocolFrameParser {
                             plazasLibres = plazasLibres,
                             capacidadTotal = capTotal,
                             crc = crc,
-                            timestamp = now
+                            timestamp = frameTimestamp,
+                            buffered = isBuffered,
+                            seq = seq,
+                            ageSec = ageSec,
+                            uptimeSec = uptimeSec,
+                            pendingNvs = pendingNvs,
+                            umbralCm = umbralCm
                         )
                     )
                 }

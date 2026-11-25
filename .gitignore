@@ -1,18 +1,39 @@
+# .gitignore mínimo para la ES3 (TI3042). Copiar a la raíz del repositorio como ".gitignore".
+
+# --- Android Studio / Gradle ---
 *.iml
-.gradle
-.kotlin
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+.gradle/
+.kotlin/
+.idea/
 local.properties
+/captures/
+.externalNativeBuild/
+.cxx/
+build/
+app/build/
+
+# --- Compilados e instalables (el APK va en Releases, no en el código) ---
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# --- Claves y credenciales: NUNCA al repositorio ---
+*.jks
+*.keystore
+secrets.h
+esp32/secrets_local.h
+secrets.properties
 .env
-debug.keystore
+google-services.json
+
+# --- Arduino / PlatformIO ---
+.pio/
+.vscode/
+*.elf
+*.bin
+*.hex
+
+# --- Sistema operativo ---
+.DS_Store
+Thumbs.db

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "author": "Daniel Meliman",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    {
+      "type": "wokwi-hc-sr04",
+      "id": "sensor",
+      "top": -120,
+      "left": -180,
+      "attrs": { "distance": "50" }
+    },
+    { "type": "wokwi-servo", "id": "servo", "top": -120, "left": 150, "attrs": {} },
+    { "type": "wokwi-lcd1602", "id": "lcd", "top": 256, "left": 53.6, "attrs": { "pins": "i2c" } }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:5V", "sensor:VCC", "red", [ "v0" ] ],
+    [ "esp:GND.1", "sensor:GND", "black", [ "v0" ] ],
+    [ "esp:5", "sensor:TRIG", "green", [ "v0" ] ],
+    [ "esp:18", "sensor:ECHO", "blue", [ "v0" ] ],
+    [ "esp:5V", "servo:V+", "red", [ "v0" ] ],
+    [ "esp:GND.1", "servo:GND", "black", [ "v0" ] ],
+    [ "esp:15", "servo:PWM", "orange", [ "v0" ] ],
+    [ "esp:5V", "lcd:VCC", "red", [ "v0" ] ],
+    [ "esp:GND.1", "lcd:GND", "black", [ "v0" ] ],
+    [ "esp:21", "lcd:SDA", "green", [ "v0" ] ],
+    [ "esp:22", "lcd:SCL", "blue", [ "v0" ] ]
+  ],
+  "dependencies": {}
+}
