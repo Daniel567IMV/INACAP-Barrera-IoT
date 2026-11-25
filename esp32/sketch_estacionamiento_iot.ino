@@ -1,19 +1,18 @@
 /**
  * ============================================================================
- * SISTEMA DE CONTROL Y MONITOREO DE BARRERA DE ESTACIONAMIENTO INTELIGENTE
- * Arquitectura IoT/OT Segura bajo Familia ISO/IEC 27000 (ISO/IEC 27400)
- * Institución: INACAP - Ingeniería en Informática / Telecomunicaciones / Automatización
+ * SISTEMA DE ESTACIONAMIENTO INTELIGENTE Y CONTROL DE BARRERA (ES3 — TI3042)
+ * Arquitectura IoT/OT Segura bajo ISO/IEC 27000 / ISO/IEC 27400 — INACAP
  *
  * HARDWARE ESP32:
  *  - Sensor Ultrasónico HC-SR04 : trigPin = 5, echoPin = 18
- *  - Actuador Servomotor SG90   : servoPin = 15 (90° = LIBRE/Arriba, 0° = OCUPADO/Abajo)
- *  - Pantalla LCD I2C (0x27)    : 16x2 caracteres (SDA = 21, SCL = 22)
+ *  - Actuador Servomotor SG90   : servoPin = 15 (90° = Abierta, 0° = Cerrada)
+ *  - Pantalla LCD I2C (0x27)    : 16x2 (SDA = 21, SCL = 22) -> Plazas libres desde entrada
  *  - Conectividad Inalámbrica   : Bluetooth Clásico SPP (BluetoothSerial)
  *
- * CARACTERÍSTICAS DE INGENIERÍA:
- *  - Cero bloqueo del loop(): Uso estricto de millis() en lugar de delay() largos.
- *  - Tramas JSON delimitadas por salto de línea ('\n') con validación de token ISO 27400.
- *  - Modo AUTO (gobernado por HC-SR04 < 10 cm) y Modo MANUAL (gobernado desde App Android).
+ * PROTOCOLO BIDIRECCIONAL ES3 (JSON delimitado por '\n'):
+ *  - Telemetría : {"type":"TELEMETRY","dist":8,"estado":"OCUPADO","barrera":0,"modo":"AUTO","plazasLibres":11,"capacidadTotal":12,"crc":"OK"}\n
+ *  - Confirmación: {"type":"ACK","cmd":"SET_BARRERA","reqId":"...","detail":"..."}\n
+ *  - Error      : {"type":"ERR","code":"OUT_OF_RANGE|UNKNOWN_CMD|MALFORMED_JSON|UNAUTHORIZED","reqId":"...","detail":"..."}\n
  * ============================================================================
  */
 
@@ -22,33 +21,41 @@
 #include <ESP32Servo.h>
 #include "BluetoothSerial.h"
 
+// Opcional: crear un archivo local `secrets_local.h` (excluido en .gitignore) con
+// `#define OT_SHARED_TOKEN "TU_TOKEN_LOCAL"` para validar un token fijo por hardware.
+#if __has_include("secrets_local.h")
+  #include "secrets_local.h"
+#endif
+
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
 #error "Bluetooth Clásico no está habilitado en la configuración de placa ESP32."
 #endif
 
-// Definición de Pines (Hardware Prototipo ESP32)
+// Definición de Pines
 const int trigPin  = 5;
 const int echoPin  = 18;
 const int servoPin = 15;
 
-// Instancias de Periféricos
-LiquidCrystal_I2C lcd(0x27, 16, 2); // SDA = 21, SCL = 22 por defecto en ESP32 Wire
+// Periféricos
+LiquidCrystal_I2C lcd(0x27, 16, 2); // SDA = 21, SCL = 22
 Servo barreraServo;
 BluetoothSerial SerialBT;
 
-// Variables de Estado del Sistema OT
+// Estado del Estacionamiento Inteligente
 long distanciaCm         = 25;
-String estadoParking     = "LIBRE";   // "LIBRE" o "OCUPADO"
-int anguloBarrera        = 90;        // 90° = Arriba (Libre), 0° = Abajo (Cerrada)
-String modoOperacion     = "AUTO";    // "AUTO" o "MANUAL"
+String estadoParking     = "LIBRE";
+bool plazaPreviaOcupada  = false;
+int anguloBarrera        = 90;       // 90° = Abierta, 0° = Cerrada
+String modoOperacion     = "AUTO";   // "AUTO" o "MANUAL"
+int capacidadTotal       = 12;
+int plazasLibres         = 11;
 
 // Temporizadores no bloqueantes con millis()
 unsigned long ultimoMuestreoMs   = 0;
 unsigned long ultimaTelemetriaMs = 0;
-const unsigned long INTERVALO_MUESTREO_MS   = 250; // Lectura HC-SR04 + LCD cada 250 ms
-const unsigned long INTERVALO_TELEMETRIA_MS = 800; // Envío JSON a Android cada 800 ms
+const unsigned long INTERVALO_MUESTREO_MS   = 250;
+const unsigned long INTERVALO_TELEMETRIA_MS = 1000;
 
-// Buffer receptor de comandos por Bluetooth
 String rxBuffer = "";
 
 // Prototipos
@@ -56,42 +63,40 @@ long medirDistanciaUltrasonicaCm();
 void evaluarLogicaControl();
 void actualizarPantallaLcd();
 void enviarTramaTelemetria();
+void enviarAck(const String& cmd, const String& reqId, const String& detail);
+void enviarErr(const String& code, const String& reqId, const String& detail);
 void procesarTramaComando(const String& jsonLine);
+bool validarTokenOt(const String& token);
 String extraerValorJsonString(const String& json, const String& clave);
 int extraerValorJsonInt(const String& json, const String& clave, int valorPorDefecto);
 
 void setup() {
   Serial.begin(115200);
-
-  // 1. Configurar pines del Sensor Ultrasónico HC-SR04
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
 
-  // 2. Inicializar Bus I2C (SDA = 21, SCL = 22) y Pantalla LCD 0x27 (16x2)
   Wire.begin(21, 22);
   lcd.init();
   lcd.backlight();
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("INACAP IoT/OT");
+  lcd.print("INACAP ES3 IoT");
   lcd.setCursor(0, 1);
-  lcd.print("INIT ISO 27400..");
+  lcd.print("ISO 27400 READY");
 
-  // 3. Inicializar Servomotor en Pin 15 (50Hz estándar SG90/MG90S)
   ESP32PWM::allocateTimer(0);
   barreraServo.setPeriodHertz(50);
   barreraServo.attach(servoPin, 500, 2400);
   barreraServo.write(anguloBarrera);
 
-  // 4. Iniciar Bluetooth Clásico RFCOMM (SPP)
   SerialBT.begin("ESP32_Barrera_INACAP");
-  Serial.println("Nodo OT ESP32 iniciado: Bluetooth 'ESP32_Barrera_INACAP' listo.");
+  Serial.println("Nodo OT ESP32 ES3 listo: Bluetooth 'ESP32_Barrera_INACAP'");
 }
 
 void loop() {
   unsigned long ahoraMs = millis();
 
-  // A. Recepción no bloqueante de comandos desde la App Android
+  // 1. Lectura no bloqueante de comandos JSON + '\n'
   while (SerialBT.available()) {
     char c = (char)SerialBT.read();
     if (c == '\n') {
@@ -103,12 +108,13 @@ void loop() {
     } else if (c != '\r') {
       rxBuffer += c;
       if (rxBuffer.length() > 512) {
-        rxBuffer = ""; // Protección contra desbordamiento de buffer (ISO 27400)
+        rxBuffer = "";
+        enviarErr("MALFORMED_JSON", "RX", "Trama excede 512 bytes (descartada)");
       }
     }
   }
 
-  // B. Muestreo periódico del sensor ultrasónico HC-SR04 y actualización de servo/LCD
+  // 2. Muestreo HC-SR04 y actualización de barrera / LCD
   if (ahoraMs - ultimoMuestreoMs >= INTERVALO_MUESTREO_MS) {
     ultimoMuestreoMs = ahoraMs;
     distanciaCm = medirDistanciaUltrasonicaCm();
@@ -116,7 +122,7 @@ void loop() {
     actualizarPantallaLcd();
   }
 
-  // C. Envío periódico de telemetría JSON a la Estación de Control Android
+  // 3. Envío periódico de telemetría JSON
   if (ahoraMs - ultimaTelemetriaMs >= INTERVALO_TELEMETRIA_MS) {
     ultimaTelemetriaMs = ahoraMs;
     if (SerialBT.hasClient()) {
@@ -125,10 +131,6 @@ void loop() {
   }
 }
 
-/**
- * Mide la distancia en cm con el sensor HC-SR04 usando timeout corto (25000 us)
- * para evitar bloquear el microcontrolador si no hay eco.
- */
 long medirDistanciaUltrasonicaCm() {
   digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
@@ -136,43 +138,36 @@ long medirDistanciaUltrasonicaCm() {
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
 
-  long duracionUs = pulseIn(echoPin, HIGH, 25000); // Timeout 25 ms (~4 metros máx)
-  if (duracionUs <= 0) {
-    return 100; // Sin obstáculo cercano detectado
-  }
+  long duracionUs = pulseIn(echoPin, HIGH, 25000);
+  if (duracionUs <= 0) return 100;
   long cm = duracionUs * 0.034 / 2;
   return constrain(cm, 1, 400);
 }
 
-/**
- * Aplica la lógica de negocio del estacionamiento:
- * - Si distancia > 0 y < 10 cm: Estado = OCUPADO; en modo AUTO baja la barrera (0°).
- * - Si distancia >= 10 cm: Estado = LIBRE; en modo AUTO sube la barrera (90°).
- */
 void evaluarLogicaControl() {
-  if (distanciaCm > 0 && distanciaCm < 10) {
-    estadoParking = "OCUPADO";
-    if (modoOperacion == "AUTO") {
-      anguloBarrera = 0;
-    }
-  } else {
-    estadoParking = "LIBRE";
-    if (modoOperacion == "AUTO") {
-      anguloBarrera = 90;
-    }
+  bool ocupadaAhora = (distanciaCm > 0 && distanciaCm < 10);
+
+  if (ocupadaAhora && !plazaPreviaOcupada) {
+    if (plazasLibres > 0) plazasLibres--;
+  } else if (!ocupadaAhora && plazaPreviaOcupada) {
+    if (plazasLibres < capacidadTotal) plazasLibres++;
+  }
+  plazaPreviaOcupada = ocupadaAhora;
+
+  estadoParking = ocupadaAhora ? "OCUPADO" : "LIBRE";
+  if (modoOperacion == "AUTO") {
+    anguloBarrera = ocupadaAhora ? 0 : 90;
   }
   barreraServo.write(anguloBarrera);
 }
 
-/**
- * Actualiza las 2 filas de la pantalla LCD I2C 0x27 sin parpadeos bruscos.
- */
 void actualizarPantallaLcd() {
   char fila0[17];
   char fila1[17];
+  const char* modoCorto = (modoOperacion == "MANUAL") ? "MAN" : "AUT";
 
-  snprintf(fila0, sizeof(fila0), "DIST:%3ldcm %5s", distanciaCm, modoOperacion.c_str());
-  snprintf(fila1, sizeof(fila1), "%-7s BAR:%3dG", estadoParking.c_str(), anguloBarrera);
+  snprintf(fila0, sizeof(fila0), "L:%2d/%2d D:%3ldcm", plazasLibres, capacidadTotal, distanciaCm);
+  snprintf(fila1, sizeof(fila1), "%-7s %2dG %3s", estadoParking.c_str(), anguloBarrera, modoCorto);
 
   lcd.setCursor(0, 0);
   lcd.print(fila0);
@@ -180,12 +175,8 @@ void actualizarPantallaLcd() {
   lcd.print(fila1);
 }
 
-/**
- * Construye y transmite la trama JSON delimitada por '\n':
- * {"dist":8,"estado":"OCUPADO","barrera":0,"modo":"AUTO","crc":"OK"}\n
- */
 void enviarTramaTelemetria() {
-  String trama = "{\"dist\":";
+  String trama = "{\"type\":\"TELEMETRY\",\"dist\":";
   trama += String(distanciaCm);
   trama += ",\"estado\":\"";
   trama += estadoParking;
@@ -193,22 +184,52 @@ void enviarTramaTelemetria() {
   trama += String(anguloBarrera);
   trama += ",\"modo\":\"";
   trama += modoOperacion;
-  trama += "\",\"crc\":\"OK\"}\n";
+  trama += "\",\"plazasLibres\":";
+  trama += String(plazasLibres);
+  trama += ",\"capacidadTotal\":";
+  trama += String(capacidadTotal);
+  trama += ",\"crc\":\"OK\"}\n";
 
   SerialBT.print(trama);
   Serial.print("TX -> " + trama);
 }
 
-/**
- * Procesa comandos JSON entrantes desde la App Android validando el token ISO 27400:
- * Ejemplo: {"cmd":"SET_BARRERA","val":90,"modo":"MANUAL","token":"INA-..."}\n
- */
+void enviarAck(const String& cmd, const String& reqId, const String& detail) {
+  String trama = "{\"type\":\"ACK\",\"cmd\":\"" + cmd +
+                 "\",\"reqId\":\"" + reqId +
+                 "\",\"detail\":\"" + detail + "\"}\n";
+  SerialBT.print(trama);
+  Serial.print("ACK -> " + trama);
+}
+
+void enviarErr(const String& code, const String& reqId, const String& detail) {
+  String trama = "{\"type\":\"ERR\",\"code\":\"" + code +
+                 "\",\"reqId\":\"" + reqId +
+                 "\",\"detail\":\"" + detail + "\"}\n";
+  SerialBT.print(trama);
+  Serial.print("ERR -> " + trama);
+}
+
+bool validarTokenOt(const String& token) {
+#ifdef OT_SHARED_TOKEN
+  return token == String(OT_SHARED_TOKEN);
+#else
+  return token.startsWith("INA-") && token.length() >= 12;
+#endif
+}
+
 void procesarTramaComando(const String& jsonLine) {
-  Serial.println("RX <- " + jsonLine);
+  if (!jsonLine.startsWith("{") || !jsonLine.endsWith("}")) {
+    enviarErr("MALFORMED_JSON", "RX", "Trama JSON incompleta o corrupta descartada");
+    return;
+  }
+
+  String reqId = extraerValorJsonString(jsonLine, "reqId");
+  if (reqId.length() == 0) reqId = "ESP";
 
   String token = extraerValorJsonString(jsonLine, "token");
-  if (!token.startsWith("INA-") && token.length() < 6) {
-    Serial.println("SEC # Comando rechazado: Token ISO 27400 invalido.");
+  if (!validarTokenOt(token)) {
+    enviarErr("UNAUTHORIZED", reqId, "Token ISO 27400 invalido o ausente");
     return;
   }
 
@@ -217,19 +238,48 @@ void procesarTramaComando(const String& jsonLine) {
   int val     = extraerValorJsonInt(jsonLine, "val", -1);
 
   if (cmd == "SET_BARRERA") {
+    if (val != 0 && val != 90) {
+      enviarErr("OUT_OF_RANGE", reqId, "Angulo invalido; solo se permite 0 o 90 grados");
+      return;
+    }
     modoOperacion = "MANUAL";
-    anguloBarrera = (val >= 45) ? 90 : 0;
+    anguloBarrera = val;
     barreraServo.write(anguloBarrera);
-  } else if (cmd == "SET_MODO" || modo == "AUTO") {
-    modoOperacion = "AUTO";
+    enviarAck(cmd, reqId, "Barrera ajustada a " + String(anguloBarrera) + "G (MANUAL)");
+  } else if (cmd == "SET_MODO") {
+    if (modo != "AUTO" && modo != "MANUAL") {
+      enviarErr("OUT_OF_RANGE", reqId, "Modo invalido; use AUTO o MANUAL");
+      return;
+    }
+    modoOperacion = modo;
     evaluarLogicaControl();
+    enviarAck(cmd, reqId, "Modo establecido en " + modoOperacion);
+  } else if (cmd == "SET_CAPACIDAD") {
+    if (val < 1 || val > 200) {
+      enviarErr("OUT_OF_RANGE", reqId, "Capacidad fuera de rango (1..200)");
+      return;
+    }
+    capacidadTotal = val;
+    if (plazasLibres > capacidadTotal) plazasLibres = capacidadTotal;
+    enviarAck(cmd, reqId, "Capacidad actualizada a " + String(capacidadTotal));
+  } else if (cmd == "SET_PLAZAS") {
+    if (val < 0 || val > capacidadTotal) {
+      enviarErr("OUT_OF_RANGE", reqId, "Plazas libres fuera de rango (0..capacidad)");
+      return;
+    }
+    plazasLibres = val;
+    enviarAck(cmd, reqId, "Plazas libres ajustadas a " + String(plazasLibres));
+  } else if (cmd == "REQ_STATUS" || cmd == "SYNC_RECORD") {
+    enviarAck(cmd, reqId, "Estado confirmado");
+  } else {
+    enviarErr("UNKNOWN_CMD", reqId, "Comando inexistente: " + cmd);
+    return;
   }
 
   actualizarPantallaLcd();
   enviarTramaTelemetria();
 }
 
-// Utilidades ligeras de parsing JSON sin sobrecarga de memoria dinámica
 String extraerValorJsonString(const String& json, const String& clave) {
   String patron = "\"" + clave + "\":\"";
   int inicio = json.indexOf(patron);

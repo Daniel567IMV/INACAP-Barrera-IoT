@@ -1,7 +1,6 @@
 package com.example.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -52,7 +51,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import com.example.security.SecurityManager
 import com.example.ui.theme.InacapCharcoal
 import com.example.ui.theme.InacapRed
 import com.example.ui.theme.IoTFreeGreen
@@ -61,18 +59,22 @@ import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.viewmodel.MainUiState
 
 /**
- * Pantalla de Login Institucional INACAP bajo estándar ISO/IEC 27400 (Cero Texto Plano).
- * Usa `rememberSaveable` para conservar campos al rotar la pantalla (Portrait <-> Landscape).
+ * Pantalla de Autenticación Institucional INACAP bajo ISO/IEC 27000 / 27400.
+ *
+ * Cero credenciales hardcodeadas: en el primer arranque exige configurar el operador inicial
+ * guardando únicamente `SHA-256(Salt_16B + Clave + DevicePepper_32B)` en `EncryptedSharedPreferences`.
  */
 @Composable
 fun LoginScreen(
     uiState: MainUiState,
     onLoginSubmit: (username: String, password: String, keepSession: Boolean) -> Unit,
-    onRegisterOrUpdate: (username: String, password: String) -> Unit,
+    onRegisterOrUpdate: (username: String, password: String, autoSignIn: Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var username by rememberSaveable { mutableStateOf(SecurityManager.DEFAULT_OPERATOR_USER) }
-    var password by rememberSaveable { mutableStateOf(SecurityManager.DEFAULT_OPERATOR_PASS_INITIAL) }
+    var username by rememberSaveable(uiState.lastRegisteredOperator) {
+        mutableStateOf(uiState.lastRegisteredOperator)
+    }
+    var password by rememberSaveable { mutableStateOf("") }
     var keepSession by rememberSaveable { mutableStateOf(true) }
     var passwordVisible by rememberSaveable { mutableStateOf(false) }
 
@@ -90,7 +92,6 @@ fun LoginScreen(
                 .padding(horizontal = 20.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Cabecera Institucional INACAP
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
@@ -121,7 +122,7 @@ fun LoginScreen(
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = "INGENIERÍA • IoT / OT",
+                            text = "TI3042 • ES3 IoT / OT",
                             style = MaterialTheme.typography.labelLarge,
                             color = Color(0xFFE0E0E0)
                         )
@@ -129,13 +130,13 @@ fun LoginScreen(
 
                     Spacer(modifier = Modifier.height(14.dp))
                     Text(
-                        text = "Control y Monitoreo de Barrera Inteligente",
+                        text = "Estacionamiento Inteligente y Control de Barrera",
                         style = MaterialTheme.typography.headlineMedium,
                         color = Color.White
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Arquitectura Segura ISO/IEC 27000 & ISO/IEC 27400 • ESP32 HC-SR04 + Servo SG90 + LCD I2C 0x27",
+                        text = "ISO/IEC 27000 & 27400 • Room SQLite Offline Sync • ESP32 HC-SR04 + Servo + LCD 16x2",
                         style = MaterialTheme.typography.bodyMedium,
                         color = Color(0xFFCCCCCC)
                     )
@@ -144,7 +145,6 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Tarjeta de Login Cifrado
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
@@ -162,11 +162,19 @@ fun LoginScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text(
-                                text = "Autenticación de Operador OT",
+                                text = if (uiState.needsInitialSetup) {
+                                    "Configuración Inicial de Operador OT"
+                                } else {
+                                    "Autenticación de Operador OT"
+                                },
                                 style = MaterialTheme.typography.titleLarge
                             )
                             Text(
-                                text = "EncryptedSharedPreferences (AES256-GCM) + Hash SHA-256 con Salt",
+                                text = if (uiState.needsInitialSetup) {
+                                    "Sin contraseñas precargadas: defina su credencial local cifrada (SHA-256 + Salt)."
+                                } else {
+                                    "EncryptedSharedPreferences (AES256-GCM) + Hash SHA-256 con Salt"
+                                },
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -178,7 +186,8 @@ fun LoginScreen(
                     OutlinedTextField(
                         value = username,
                         onValueChange = { username = it },
-                        label = { Text("Operador / ID Institucional") },
+                        label = { Text("Operador / ID Institucional (mín. 4 caracteres)") },
+                        placeholder = { Text("ej. operador.estacionamiento") },
                         leadingIcon = {
                             Icon(Icons.Default.Person, contentDescription = "Icono Operador")
                         },
@@ -193,7 +202,7 @@ fun LoginScreen(
                     OutlinedTextField(
                         value = password,
                         onValueChange = { password = it },
-                        label = { Text("Clave de Seguridad (Cero Texto Plano)") },
+                        label = { Text("Clave Segura (mín. 8 caracteres, letras y números)") },
                         leadingIcon = {
                             Icon(Icons.Default.Lock, contentDescription = "Icono Clave")
                         },
@@ -230,7 +239,7 @@ fun LoginScreen(
                             modifier = Modifier.testTag("keep_session_checkbox")
                         )
                         Text(
-                            text = "Mantener sesión iniciada de forma cifrada (AES256-GCM)",
+                            text = "Mantener sesión cifrada activa (AES256-GCM)",
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
@@ -254,38 +263,53 @@ fun LoginScreen(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    Button(
-                        onClick = { onLoginSubmit(username, password, keepSession) },
-                        colors = ButtonDefaults.buttonColors(containerColor = InacapRed),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
-                            .testTag("login_button")
-                    ) {
-                        Icon(Icons.Default.Key, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("INICIAR SESIÓN SEGURA", fontWeight = FontWeight.Bold)
-                    }
+                    if (uiState.needsInitialSetup) {
+                        Button(
+                            onClick = { onRegisterOrUpdate(username, password, true) },
+                            colors = ButtonDefaults.buttonColors(containerColor = InacapRed),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .testTag("initial_setup_button")
+                        ) {
+                            Icon(Icons.Default.Key, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("REGISTRAR OPERADOR E INGRESAR", fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Button(
+                            onClick = { onLoginSubmit(username, password, keepSession) },
+                            colors = ButtonDefaults.buttonColors(containerColor = InacapRed),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .testTag("login_button")
+                        ) {
+                            Icon(Icons.Default.Key, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("INICIAR SESIÓN SEGURA", fontWeight = FontWeight.Bold)
+                        }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                    OutlinedButton(
-                        onClick = { onRegisterOrUpdate(username, password) },
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("register_credentials_button")
-                    ) {
-                        Text("Registrar / Actualizar Hash SHA-256 Local")
+                        OutlinedButton(
+                            onClick = { onRegisterOrUpdate(username, password, false) },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("register_credentials_button")
+                        ) {
+                            Text("Registrar / Rotar Hash SHA-256 Local")
+                        }
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Tarjeta de Evidencia Criptográfica para Evaluación Académica (Rúbrica A1)
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -293,17 +317,17 @@ fun LoginScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "VERIFICACIÓN DE SEGURIDAD ISO/IEC 27400 (CERO TEXTO PLANO)",
+                        text = "CONTROLES VERIFICABLES ISO/IEC 27000 & 27400",
                         style = MaterialTheme.typography.labelSmall,
                         color = InacapRed,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "• KeyScheme: MasterKey.KeyScheme.AES256_GCM\n" +
-                            "• Hashing: SHA-256 + 16-byte SecureRandom Salt\n" +
-                            "• Huella Hash Activa: ${uiState.sha256Fingerprint}\n" +
-                            "• Credencial por defecto precargada: admin_inacap / Inacap2026!",
+                        text = "• Cero secretos ni claves por defecto en el APK/repositorio\n" +
+                            "• Almacén: EncryptedSharedPreferences (AES256-GCM / AES256-SIV)\n" +
+                            "• Hash: SHA-256 + Salt 16B + Device Pepper 32B en Keystore\n" +
+                            "• Huella Hash Activa: ${uiState.sha256Fingerprint}",
                         fontFamily = JetBrainsMonoFamily,
                         style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFFD6D6D6)

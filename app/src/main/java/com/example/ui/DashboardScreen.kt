@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.ArrowDownward
@@ -30,17 +31,17 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AutoMode
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.DeveloperBoard
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.PauseCircleOutline
+import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -64,15 +65,19 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.example.data.ConnectionState
 import com.example.data.DeviceRole
 import com.example.data.TransportMode
 import com.example.ui.theme.InacapCharcoal
@@ -84,7 +89,6 @@ import com.example.ui.theme.IoTManualAmber
 import com.example.ui.theme.IoTManualAmberBg
 import com.example.ui.theme.IoTOccupiedRed
 import com.example.ui.theme.IoTOccupiedRedBg
-import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.viewmodel.MainUiState
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -100,13 +104,19 @@ fun DashboardScreen(
     onConnectOrStartSocket: () -> Unit,
     onDisconnectSocket: () -> Unit,
     onSimulateAbruptDisconnect: () -> Unit,
+    onToggleTelemetryPause: () -> Unit,
     onRefreshDevices: () -> Unit,
     onOpenBarrier: () -> Unit,
     onCloseBarrier: () -> Unit,
     onSetAutoMode: () -> Unit,
     onRequestStatus: () -> Unit,
+    onSendValidatedAngle: (String) -> Unit,
+    onSendValidatedCapacity: (capacity: String, freeSlots: String) -> Unit,
+    onSendProtocolFaultProbe: (String) -> Unit,
     onSensorDistanceSliderChange: (Float) -> Unit,
-    onFlushOfflineQueue: () -> Unit,
+    onSyncPendingRoom: () -> Unit,
+    onClearSyncedRoom: () -> Unit,
+    onSaveSecureConfig: (syncEndpointUrl: String, sharedOtToken: String) -> Unit,
     onClearAuditLogs: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier
@@ -128,7 +138,7 @@ fun DashboardScreen(
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "INACAP • BARRERA IoT/OT",
+                                text = "INACAP • BARRERA IoT",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
@@ -139,7 +149,7 @@ fun DashboardScreen(
                                 shape = RoundedCornerShape(6.dp)
                             ) {
                                 Text(
-                                    text = "ISO 27400",
+                                    text = "ES3 • ISO 27400",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color.White,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -147,7 +157,7 @@ fun DashboardScreen(
                             }
                         }
                         Text(
-                            text = "Operador: ${uiState.activeOperator} • Token: ${uiState.sessionToken}",
+                            text = "Operador: ${uiState.activeOperator} • Token: ${uiState.sessionTokenMasked}",
                             style = MaterialTheme.typography.labelSmall,
                             color = Color.White.copy(alpha = 0.9f),
                             maxLines = 1,
@@ -183,12 +193,38 @@ fun DashboardScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // 1. Estado Semántico de Conexión Inalámbrica
+                // 1. Panel de Entrada: Plazas Libres / Capacidad Total + Marca de Hora de Telemetría
                 item {
-                    ConnectionStatusBanner(connectionState = uiState.connectionState)
+                    ParkingEntranceHeaderCard(
+                        freeSlots = uiState.freeSlots,
+                        totalCapacity = uiState.totalCapacity,
+                        parkingStatus = uiState.parkingStatus,
+                        lastTelemetryTimestamp = uiState.lastTelemetryTimestamp
+                    )
                 }
 
-                // 2. Banner de Permisos en Runtime (Rúbrica B: Manejo de denegación sin crasheos)
+                // 2. Estado de Salud de Conexión (4 estados: CONECTADO, RECONECTANDO, DESCONECTADO, SIN DATOS RECIENTES)
+                item {
+                    ConnectionStatusBanner(
+                        connectionState = uiState.connectionState,
+                        connectionHealth = uiState.connectionHealth,
+                        secondsSinceLastTelemetry = uiState.secondsSinceLastTelemetry
+                    )
+                }
+
+                // 3. Tira de Respuestas ACK y ERR con Marca de Hora Local Legible
+                if (uiState.lastAckSummary != null || uiState.lastErrSummary != null) {
+                    item {
+                        AckErrStatusStrip(
+                            lastAckSummary = uiState.lastAckSummary,
+                            lastAckTimestamp = uiState.lastAckTimestamp,
+                            lastErrSummary = uiState.lastErrSummary,
+                            lastErrTimestamp = uiState.lastErrTimestamp
+                        )
+                    }
+                }
+
+                // 4. Banner de Permisos en Runtime (Sin crasheos ante denegación)
                 if (!uiState.hasWirelessPermissions || uiState.permissionDeniedMessage != null) {
                     item {
                         PermissionsRuntimeCard(
@@ -200,7 +236,7 @@ fun DashboardScreen(
                     }
                 }
 
-                // 3. Selector de Rol del Dispositivo (2 Teléfonos Físicos o Celular <-> ESP32)
+                // 5. Selector de Rol del Dispositivo (Estación de Control vs Nodo Sensor OT)
                 item {
                     RoleSelectorCard(
                         selectedRole = uiState.selectedRole,
@@ -208,7 +244,7 @@ fun DashboardScreen(
                     )
                 }
 
-                // 4. Gemelo Digital Animado (Barrera + Sensor Ultrasónico HC-SR04) + LCD 16x2 I2C
+                // 6. Gemelo Digital Animado (Barrera + HC-SR04) + Display LCD I2C 16x2
                 item {
                     AnimatedSmartBarrierCanvas(
                         distanceCm = uiState.distanceCm,
@@ -226,11 +262,12 @@ fun DashboardScreen(
                     )
                 }
 
-                // 5. Panel de Telemetría y Control (según Rol activo)
+                // 7. Grilla de Indicadores de Estacionamiento Inteligente
                 item {
                     TelemetryIndicatorsGrid(uiState = uiState)
                 }
 
+                // 8. Control de Actuador con Validación de Parámetros / Rangos OR Simulador Nodo Sensor
                 if (uiState.selectedRole == DeviceRole.CONTROL_STATION) {
                     item {
                         ControlStationActuatorCard(
@@ -238,7 +275,10 @@ fun DashboardScreen(
                             onOpenBarrier = onOpenBarrier,
                             onCloseBarrier = onCloseBarrier,
                             onSetAutoMode = onSetAutoMode,
-                            onRequestStatus = onRequestStatus
+                            onRequestStatus = onRequestStatus,
+                            onSendValidatedAngle = onSendValidatedAngle,
+                            onSendValidatedCapacity = onSendValidatedCapacity,
+                            onSendProtocolFaultProbe = onSendProtocolFaultProbe
                         )
                     }
                 } else {
@@ -253,7 +293,7 @@ fun DashboardScreen(
                     }
                 }
 
-                // 6. Configuración de Transporte Inalámbrico y Tolerancia a Fallos (IOException / Backoff)
+                // 9. Conectividad Inalámbrica y Pruebas de Reconexión Backoff / Sin Datos Recientes
                 item {
                     WirelessTransportCard(
                         uiState = uiState,
@@ -264,15 +304,18 @@ fun DashboardScreen(
                         onConnectOrStartSocket = onConnectOrStartSocket,
                         onDisconnectSocket = onDisconnectSocket,
                         onSimulateAbruptDisconnect = onSimulateAbruptDisconnect,
+                        onToggleTelemetryPause = onToggleTelemetryPause,
                         onRefreshDevices = onRefreshDevices
                     )
                 }
 
-                // 7. Cola de Sincronización Temporal Cifrada (Offline Sync) y Auditoría de Tramas JSON
+                // 10. Base de Datos Room SQLite (Offline Sync deduplicado) + Bitácora con Timestamp
                 item {
-                    OfflineSyncAndAuditCard(
+                    RoomSyncAndAuditCard(
                         uiState = uiState,
-                        onFlushOfflineQueue = onFlushOfflineQueue,
+                        onSyncPendingRoom = onSyncPendingRoom,
+                        onClearSyncedRoom = onClearSyncedRoom,
+                        onSaveSecureConfig = onSaveSecureConfig,
                         onClearAuditLogs = onClearAuditLogs
                     )
                 }
@@ -416,9 +459,9 @@ private fun RoleSelectorCard(
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = if (role == DeviceRole.CONTROL_STATION) {
-                                    "Cliente: Monitorea y envía comandos"
+                                    "Cliente: Monitorea y valida comandos"
                                 } else {
-                                    "Servidor / ESP32: Simula HC-SR04 y Servo"
+                                    "Servidor / ESP32: HC-SR04 y Servo"
                                 },
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = Color.White.copy(alpha = 0.85f)
@@ -442,7 +485,6 @@ private fun TelemetryIndicatorsGrid(uiState: MainUiState) {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // 1. Distancia HC-SR04
             TelemetryMetricCard(
                 title = "DISTANCIA HC-SR04",
                 value = "${uiState.distanceCm} cm",
@@ -452,12 +494,10 @@ private fun TelemetryIndicatorsGrid(uiState: MainUiState) {
                 valueTestTag = "distance_value_text",
                 modifier = Modifier.weight(1f)
             )
-
-            // 2. Estado del Estacionamiento
             TelemetryMetricCard(
-                title = "ESTACIONAMIENTO",
+                title = "ESTADO DE PLAZA",
                 value = uiState.parkingStatus,
-                subtitle = if (isOccupied) "Vehículo < 10 cm" else "Espacio disponible ≥ 10 cm",
+                subtitle = if (isOccupied) "Vehículo < 10 cm" else "Despejada ≥ 10 cm",
                 accentColor = if (isOccupied) IoTOccupiedRed else IoTFreeGreen,
                 bgColor = if (isOccupied) IoTOccupiedRedBg else IoTFreeGreenBg,
                 valueTestTag = "parking_status_text",
@@ -469,22 +509,19 @@ private fun TelemetryIndicatorsGrid(uiState: MainUiState) {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // 3. Estado del Servomotor (Barrera)
             TelemetryMetricCard(
-                title = "SERVOMOTOR (PIN 15)",
+                title = "BARRERA SERVO (PIN 15)",
                 value = if (isBarrierOpen) "ABIERTA (90°)" else "CERRADA (0°)",
-                subtitle = "PWM ESP32Servo • ${uiState.barrierAngle}°",
+                subtitle = "Ángulo actual: ${uiState.barrierAngle}°",
                 accentColor = if (isBarrierOpen) IoTFreeGreen else IoTOccupiedRed,
                 bgColor = MaterialTheme.colorScheme.surface,
                 valueTestTag = "barrier_status_text",
                 modifier = Modifier.weight(1f)
             )
-
-            // 4. Modo de Operación
             TelemetryMetricCard(
                 title = "MODO OPERACIÓN",
                 value = uiState.operationMode,
-                subtitle = if (isManual) "Forzado por Operador" else "Controlado por HC-SR04",
+                subtitle = if (isManual) "Forzado por Operador" else "Automático HC-SR04",
                 accentColor = if (isManual) IoTManualAmber else IoTFreeGreen,
                 bgColor = if (isManual) IoTManualAmberBg else MaterialTheme.colorScheme.surface,
                 valueTestTag = "mode_status_text",
@@ -544,14 +581,26 @@ private fun TelemetryMetricCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ControlStationActuatorCard(
     uiState: MainUiState,
     onOpenBarrier: () -> Unit,
     onCloseBarrier: () -> Unit,
     onSetAutoMode: () -> Unit,
-    onRequestStatus: () -> Unit
+    onRequestStatus: () -> Unit,
+    onSendValidatedAngle: (String) -> Unit,
+    onSendValidatedCapacity: (capacity: String, freeSlots: String) -> Unit,
+    onSendProtocolFaultProbe: (String) -> Unit
 ) {
+    var angleInput by rememberSaveable { mutableStateOf("90") }
+    var capacityInput by rememberSaveable(uiState.totalCapacity) {
+        mutableStateOf(uiState.totalCapacity.toString())
+    }
+    var freeSlotsInput by rememberSaveable(uiState.freeSlots) {
+        mutableStateOf(uiState.freeSlots.toString())
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -564,13 +613,13 @@ private fun ControlStationActuatorCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Comandos de Actuador Remoto (Estación de Control)",
+                        text = "Control de Barrera y Comandos Validados",
                         style = MaterialTheme.typography.titleLarge
                     )
                     Text(
-                        text = "Envía tramas JSON firmadas con token ${uiState.sessionToken} en Dispatchers.IO",
+                        text = "Tramas JSON + '\\n' con validación de rangos en UI y verificación ACK/ERR",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -634,7 +683,7 @@ private fun ControlStationActuatorCard(
                 ) {
                     Icon(Icons.Default.AutoMode, contentDescription = null)
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("MODO AUTOMÁTICO", fontWeight = FontWeight.Bold)
+                    Text("MODO AUTO", fontWeight = FontWeight.Bold)
                 }
 
                 OutlinedButton(
@@ -647,19 +696,128 @@ private fun ControlStationActuatorCard(
                 ) {
                     Icon(Icons.Default.Refresh, contentDescription = null)
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("SOLICITAR ESTADO", fontWeight = FontWeight.Bold)
+                    Text("ESTADO", fontWeight = FontWeight.Bold)
                 }
             }
 
-            // Control rápido del sensor ultrasónico integrado para pruebas ágiles en 1 o 2 equipos
             Spacer(modifier = Modifier.height(14.dp))
             HorizontalDivider()
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Validación previa en UI de parámetros/rangos (Requerimiento 1 ES3)
             Text(
-                text = "Nota: Cambia a la pestaña '2. Nodo Sensor OT' arriba para mover el Slider del sensor ultrasónico HC-SR04 (0-100 cm) o usar un 2° Android como servidor.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = "Ajuste Validado de Ángulo y Plazas de Entrada",
+                style = MaterialTheme.typography.labelLarge
             )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = angleInput,
+                    onValueChange = { angleInput = it },
+                    label = { Text("Ángulo (0° / 90°)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("custom_angle_input")
+                )
+                Button(
+                    onClick = { onSendValidatedAngle(angleInput) },
+                    colors = ButtonDefaults.buttonColors(containerColor = InacapRed),
+                    modifier = Modifier
+                        .height(52.dp)
+                        .testTag("btn_send_custom_angle")
+                ) {
+                    Text("Validar y Enviar")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = freeSlotsInput,
+                    onValueChange = { freeSlotsInput = it },
+                    label = { Text("Plazas Libres") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("free_slots_input")
+                )
+                OutlinedTextField(
+                    value = capacityInput,
+                    onValueChange = { capacityInput = it },
+                    label = { Text("Capacidad (1-200)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("capacity_input")
+                )
+                OutlinedButton(
+                    onClick = { onSendValidatedCapacity(capacityInput, freeSlotsInput) },
+                    modifier = Modifier
+                        .height(52.dp)
+                        .testTag("btn_update_capacity")
+                ) {
+                    Text("Aplicar")
+                }
+            }
+
+            if (!uiState.commandValidationError.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    color = IoTOccupiedRedBg,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("ui_validation_error_banner")
+                ) {
+                    Text(
+                        text = "Validación UI: ${uiState.commandValidationError}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = IoTOccupiedRed,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = "Pruebas de Robustez ES3 (ERR y Descarte Seguro):",
+                style = MaterialTheme.typography.labelLarge
+            )
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                AssistChip(
+                    onClick = { onSendProtocolFaultProbe("UNKNOWN_CMD") },
+                    label = { Text("Probar ERR: Cmd inválido") },
+                    modifier = Modifier.testTag("probe_unknown_cmd")
+                )
+                AssistChip(
+                    onClick = { onSendProtocolFaultProbe("UNAUTHORIZED") },
+                    label = { Text("Probar ERR: Token inválido") },
+                    modifier = Modifier.testTag("probe_unauthorized")
+                )
+                AssistChip(
+                    onClick = { onSendProtocolFaultProbe("CORRUPT_JSON") },
+                    label = { Text("Probar Trama JSON corrupta") },
+                    modifier = Modifier.testTag("probe_corrupt_json")
+                )
+            }
         }
     }
 }
@@ -694,7 +852,7 @@ private fun SensorNodeSimulatorCard(
                         style = MaterialTheme.typography.titleLarge
                     )
                     Text(
-                        text = "Regla física: En modo AUTO, >0 y <10 cm -> OCUPADO (0°) | ≥10 cm -> LIBRE (90°)",
+                        text = "Modo AUTO: >0 y <10 cm -> OCUPADO (0°) | ≥10 cm -> LIBRE (90°) + conteo de plazas",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -745,43 +903,23 @@ private fun SensorNodeSimulatorCard(
             ) {
                 AssistChip(
                     onClick = { onDistanceChange(5f) },
-                    label = { Text("5 cm (Vehículo <10cm -> OCUPADO 0°)") },
-                    modifier = Modifier.testTag("preset_5cm_chip")
+                    label = { Text("5 cm (Vehículo <10cm -> OCUPADO 0°)") }
                 )
                 AssistChip(
                     onClick = { onDistanceChange(24f) },
-                    label = { Text("24 cm (Estacionamiento LIBRE 90°)") },
-                    modifier = Modifier.testTag("preset_24cm_chip")
-                )
-                AssistChip(
-                    onClick = { onDistanceChange(75f) },
-                    label = { Text("75 cm (Despejado)") }
+                    label = { Text("24 cm (Plaza LIBRE 90°)") }
                 )
             }
 
             Spacer(modifier = Modifier.height(10.dp))
-            HorizontalDivider()
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Text(
-                text = "Override Local del Nodo Sensor:",
-                style = MaterialTheme.typography.labelLarge
-            )
-            Spacer(modifier = Modifier.height(8.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
-                    onClick = onOpenBarrier,
-                    modifier = Modifier.weight(1f)
-                ) {
+                OutlinedButton(onClick = onOpenBarrier, modifier = Modifier.weight(1f)) {
                     Text("90° Manual")
                 }
-                OutlinedButton(
-                    onClick = onCloseBarrier,
-                    modifier = Modifier.weight(1f)
-                ) {
+                OutlinedButton(onClick = onCloseBarrier, modifier = Modifier.weight(1f)) {
                     Text("0° Manual")
                 }
                 Button(
@@ -807,6 +945,7 @@ private fun WirelessTransportCard(
     onConnectOrStartSocket: () -> Unit,
     onDisconnectSocket: () -> Unit,
     onSimulateAbruptDisconnect: () -> Unit,
+    onToggleTelemetryPause: () -> Unit,
     onRefreshDevices: () -> Unit
 ) {
     Card(
@@ -821,7 +960,10 @@ private fun WirelessTransportCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
                     Icon(
                         imageVector = Icons.Default.Router,
                         contentDescription = "Conectividad Inalámbrica",
@@ -830,11 +972,11 @@ private fun WirelessTransportCard(
                     Spacer(modifier = Modifier.width(8.dp))
                     Column {
                         Text(
-                            text = "Enlace de Sockets Inalámbricos (Dispatchers.IO)",
+                            text = "Enlace Inalámbrico y Backoff (2s→4s→8s→16s→30s)",
                             style = MaterialTheme.typography.titleLarge
                         )
                         Text(
-                            text = "IP Local de este equipo: ${uiState.localIpAddress}:8888",
+                            text = "IP Local: ${uiState.localIpAddress}:8888 • Reconexión en Dispatchers.IO sin reiniciar app",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -876,13 +1018,6 @@ private fun WirelessTransportCard(
             }
 
             Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = uiState.selectedTransport.description,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
 
             when (uiState.selectedTransport) {
                 TransportMode.BLUETOOTH_RFCOMM -> {
@@ -897,10 +1032,6 @@ private fun WirelessTransportCard(
                     )
                     if (uiState.pairedBtDevices.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "Dispositivos Emparejados Detectados:",
-                            style = MaterialTheme.typography.labelLarge
-                        )
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.fillMaxWidth()
@@ -948,7 +1079,7 @@ private fun WirelessTransportCard(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "Modo Loopback activo: Abre un ServerSocket TCP real en 127.0.0.1:8888 y conecta el cliente en vivo para probar comandos, LCD, rotación y reconexión automática en 1 solo dispositivo.",
+                            text = "Loopback TCP (127.0.0.1:8888): Ejecuta sockets reales Cliente/Servidor en este equipo para probar telemetría, ACK/ERR, Room Sync y backoff exponencial.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = InacapCharcoal,
                             modifier = Modifier.padding(10.dp)
@@ -966,7 +1097,7 @@ private fun WirelessTransportCard(
                 val actionLabel = if (uiState.selectedRole == DeviceRole.SENSOR_NODE &&
                     uiState.selectedTransport != TransportMode.LOCAL_LOOPBACK
                 ) {
-                    "INICIAR SERVIDOR OT"
+                    "INICIAR SERVIDOR"
                 } else {
                     "CONECTAR SOCKET"
                 }
@@ -996,175 +1127,52 @@ private fun WirelessTransportCard(
                 ) {
                     Icon(Icons.Default.LinkOff, contentDescription = null)
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("CERRAR SOCKET")
+                    Text("DESCONECTAR")
                 }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Botón de prueba de Tolerancia a Fallos (Rúbrica E: Desconexión forzada y Reconexión con Backoff)
-            OutlinedButton(
-                onClick = onSimulateAbruptDisconnect,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("btn_simulate_disconnect")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Bolt,
-                    contentDescription = null,
-                    tint = IoTManualAmber
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Simular Desconexión Forzada (IOException + Backoff)",
-                    color = InacapCharcoal,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun OfflineSyncAndAuditCard(
-    uiState: MainUiState,
-    onFlushOfflineQueue: () -> Unit,
-    onClearAuditLogs: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.CloudSync,
-                        contentDescription = "Sincronización Offline",
-                        tint = InacapRed
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Column {
-                        Text(
-                            text = "Cola Temporal Cifrada (Offline Sync) & Tramas JSON",
-                            style = MaterialTheme.typography.titleLarge
-                        )
-                        Text(
-                            text = "Pendientes: ${uiState.offlineSyncQueue.size} • Sincronizados al reconectar: ${uiState.syncedEventsCount}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.testTag("offline_queue_counter")
-                        )
-                    }
-                }
-
-                if (uiState.offlineSyncQueue.isNotEmpty()) {
-                    Button(
-                        onClick = onFlushOfflineQueue,
-                        colors = ButtonDefaults.buttonColors(containerColor = IoTFreeGreen),
-                        modifier = Modifier.testTag("btn_flush_offline_queue")
-                    ) {
-                        Text("Sincronizar")
-                    }
-                }
-            }
-
-            if (uiState.offlineSyncQueue.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(10.dp))
-                Surface(
-                    color = IoTManualAmberBg,
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
-                        Text(
-                            text = "Eventos Retenidos en EncryptedSharedPreferences:",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = InacapCharcoal
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        uiState.offlineSyncQueue.takeLast(4).forEach { item ->
-                            Text(
-                                text = "• [${item.formattedTime()}] ${item.type}: ${item.payloadJson}",
-                                fontFamily = JetBrainsMonoFamily,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = InacapCharcoal
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Terminal,
-                        contentDescription = null,
-                        tint = InacapCharcoal,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "MONITOR DE PROTOCOLO SEGURO (JSON + \\n)",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                }
-                Text(
-                    text = "Limpiar",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = InacapRed,
-                    modifier = Modifier
-                        .clickable { onClearAuditLogs() }
-                        .padding(4.dp)
-                )
             }
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            Surface(
-                color = InacapCharcoal,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    if (uiState.auditLogs.isEmpty()) {
-                        Text(
-                            text = "Esperando tramas JSON delimitadas por '\\n'...",
-                            fontFamily = JetBrainsMonoFamily,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFF9E9E9E)
-                        )
-                    } else {
-                        uiState.auditLogs.take(10).forEach { log ->
-                            val logColor = when {
-                                log.isWarning -> Color(0xFFFFB74D)
-                                log.direction.startsWith("TX") -> Color(0xFF81C784)
-                                log.direction.startsWith("RX") -> Color(0xFF64B5F6)
-                                else -> Color(0xFFE0E0E0)
-                            }
-                            Text(
-                                text = "[${log.timestamp}] ${log.direction} ${log.rawFrame}",
-                                fontFamily = JetBrainsMonoFamily,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = logColor,
-                                modifier = Modifier.padding(vertical = 2.dp)
-                            )
-                        }
-                    }
+                OutlinedButton(
+                    onClick = onSimulateAbruptDisconnect,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("btn_simulate_disconnect")
+                ) {
+                    Icon(Icons.Default.Bolt, contentDescription = null, tint = IoTManualAmber)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Corte Backoff", fontWeight = FontWeight.Bold, color = InacapCharcoal)
+                }
+
+                OutlinedButton(
+                    onClick = onToggleTelemetryPause,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("btn_toggle_stale_test")
+                ) {
+                    Icon(
+                        imageVector = if (uiState.isTelemetryFeedPausedForTest) {
+                            Icons.Default.PlayCircleOutline
+                        } else {
+                            Icons.Default.PauseCircleOutline
+                        },
+                        contentDescription = null,
+                        tint = InacapRed
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = if (uiState.isTelemetryFeedPausedForTest) "Reanudar Feed" else "Pausar (Sin Datos)",
+                        fontWeight = FontWeight.Bold,
+                        color = InacapCharcoal
+                    )
                 }
             }
         }

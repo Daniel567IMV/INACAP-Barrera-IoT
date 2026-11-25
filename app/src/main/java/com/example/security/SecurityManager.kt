@@ -5,21 +5,24 @@ import android.content.SharedPreferences
 import android.util.Base64
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import com.example.data.OfflineSyncEvent
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
 
 /**
- * Gestor de Seguridad Criptográfica bajo familia de normas ISO/IEC 27000 (ISO/IEC 27400 IoT/OT).
+ * Gestor de Seguridad Criptográfica bajo familia de normas ISO/IEC 27000 / ISO/IEC 27400.
  *
- * Cumple estrictamente con:
- * 1. Almacenamiento exclusivo en `EncryptedSharedPreferences` utilizando `MasterKey` con `AES256_GCM`.
- * 2. Cero Texto Plano: Ninguna contraseña se guarda ni compara en texto claro; se aplica
- *    `SHA-256` con Salt aleatorio de 16 bytes generado con `SecureRandom`.
- * 3. Tokens de sesión firmados con SHA-256 para autenticar tramas JSON entre la Estación de Control
- *    y el Nodo Sensor / ESP32.
- * 4. Persistencia cifrada de la cola de sincronización temporal (Offline Sync Queue).
+ * Controles verificables implementados:
+ * 1. Cero credenciales ni secretos hardcodeados en código fuente:
+ *    - En el primer inicio, exige registrar el operador inicial (o permite configurar credenciales
+ *      locales) sin contraseñas predefinidas en el binario.
+ *    - El pepper criptográfico de 32 bytes se genera con `SecureRandom` por instalación y se guarda
+ *      exclusivamente en `EncryptedSharedPreferences` (`MasterKey.KeyScheme.AES256_GCM`).
+ * 2. Cero Texto Plano:
+ *    - Cada contraseña se almacena como `SHA-256(salt_16B + password + device_pepper_32B)`.
+ *    - Verificación en tiempo constante mediante `MessageDigest.isEqual`.
+ * 3. Tokens de sesión y destino de sincronización configurables almacenados cifrados localmente
+ *    sin versionar secretos en el repositorio.
  */
 @Suppress("DEPRECATION")
 class SecurityManager(context: Context) {
@@ -30,14 +33,6 @@ class SecurityManager(context: Context) {
         createEncryptedPreferences(appContext)
     }
 
-    init {
-        ensureDefaultInstitutionalOperator()
-    }
-
-    /**
-     * Inicializa `EncryptedSharedPreferences` con esquema `AES256_GCM` en AndroidKeyStore.
-     * Incluye fallback seguro en caso de ejecutarse en entorno JVM de pruebas unitarias (Robolectric).
-     */
     private fun createEncryptedPreferences(context: Context): SharedPreferences {
         return try {
             val masterKey = MasterKey.Builder(context)
@@ -52,26 +47,37 @@ class SecurityManager(context: Context) {
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
         } catch (_: Exception) {
-            // Fallback exclusivo para entornos JVM sin KeyStore hardware (ej. Robolectric test)
-            context.getSharedPreferences("${PREFS_FILE_NAME}_fallback", Context.MODE_PRIVATE)
+            // Fallback únicamente para pruebas unitarias JVM (Robolectric) sin AndroidKeyStore
+            context.getSharedPreferences("${PREFS_FILE_NAME}_jvm_test", Context.MODE_PRIVATE)
         }
     }
 
     /**
-     * Garantiza que exista una cuenta institucional por defecto ("admin_inacap" / "Inacap2026!")
-     * almacenada ÚNICAMENTE como Hash SHA-256 + Salt (jamás en texto plano).
+     * Obtiene o genera un pepper criptográfico de 32 bytes único por dispositivo,
+     * persistido cifrado en AndroidKeyStore / EncryptedSharedPreferences.
      */
-    private fun ensureDefaultInstitutionalOperator() {
-        val normalizedUser = DEFAULT_OPERATOR_USER.lowercase()
-        val existingHash = encryptedPrefs.getString(keyHash(normalizedUser), null)
-        if (existingHash == null) {
-            registerOrUpdateCredentials(DEFAULT_OPERATOR_USER, DEFAULT_OPERATOR_PASS_INITIAL)
-        }
+    private fun getOrCreateDevicePepper(): String {
+        val existing = encryptedPrefs.getString(KEY_DEVICE_PEPPER, null)
+        if (!existing.isNullOrBlank()) return existing
+
+        val randomBytes = ByteArray(32)
+        SecureRandom().nextBytes(randomBytes)
+        val generated = Base64.encodeToString(randomBytes, Base64.NO_WRAP)
+        encryptedPrefs.edit().putString(KEY_DEVICE_PEPPER, generated).apply()
+        return generated
     }
 
     /**
-     * Genera un Salt criptográfico aleatorio de 16 bytes codificado en Base64.
+     * Indica si ya existe al menos un operador registrado en el almacén cifrado local.
      */
+    fun hasRegisteredOperators(): Boolean {
+        return !encryptedPrefs.getString(KEY_LAST_REGISTERED_USER, null).isNullOrBlank()
+    }
+
+    fun getLastRegisteredOperator(): String {
+        return encryptedPrefs.getString(KEY_LAST_REGISTERED_USER, "") ?: ""
+    }
+
     fun generateSalt(): String {
         val saltBytes = ByteArray(16)
         SecureRandom().nextBytes(saltBytes)
@@ -79,21 +85,29 @@ class SecurityManager(context: Context) {
     }
 
     /**
-     * Aplica hashing unidireccional SHA-256 con Salt (ISO/IEC 27400 - Cero Texto Plano).
+     * Aplica hashing unidireccional SHA-256 con Salt aleatorio + pepper cifrado por dispositivo.
      */
     fun hashPasswordSha256(plainPassword: String, saltBase64: String): String {
+        val pepper = getOrCreateDevicePepper()
         val digest = MessageDigest.getInstance("SHA-256")
-        val saltedInput = "$saltBase64:$plainPassword:$PEPPER_ISO27400".toByteArray(Charsets.UTF_8)
+        val saltedInput = "$saltBase64:$plainPassword:$pepper".toByteArray(Charsets.UTF_8)
         val hashBytes = digest.digest(saltedInput)
         return hashBytes.joinToString("") { "%02x".format(it) }
     }
 
     /**
-     * Registra o actualiza las credenciales de un operador guardando únicamente Salt y Hash SHA-256.
+     * Registra o actualiza las credenciales de un operador aplicando política mínima de robustez.
      */
-    fun registerOrUpdateCredentials(username: String, plainPassword: String): Boolean {
+    fun registerOrUpdateCredentials(username: String, plainPassword: String): AuthResult {
         val cleanUser = username.trim().lowercase()
-        if (cleanUser.length < 3 || plainPassword.length < 4) return false
+        if (cleanUser.length < 4 || !cleanUser.matches(Regex("^[a-z0-9._-]+$"))) {
+            return AuthResult.Error("El ID de operador debe tener mínimo 4 caracteres alfanuméricos.")
+        }
+        val hasLetter = plainPassword.any { it.isLetter() }
+        val hasDigit = plainPassword.any { it.isDigit() }
+        if (plainPassword.length < 8 || !hasLetter || !hasDigit) {
+            return AuthResult.Error("La clave debe tener mínimo 8 caracteres, incluyendo letras y números.")
+        }
 
         val salt = generateSalt()
         val passwordHash = hashPasswordSha256(plainPassword, salt)
@@ -103,12 +117,23 @@ class SecurityManager(context: Context) {
             .putString(keyHash(cleanUser), passwordHash)
             .putString(KEY_LAST_REGISTERED_USER, username.trim())
             .apply()
-        return true
+
+        val token = generateSessionToken(cleanUser)
+        encryptedPrefs.edit()
+            .putString(KEY_SESSION_TOKEN, token)
+            .putString(KEY_ACTIVE_OPERATOR, username.trim())
+            .putString(KEY_ACTIVE_HASH_PREVIEW, passwordHash.take(16).uppercase())
+            .apply()
+
+        return AuthResult.Success(
+            operatorName = username.trim(),
+            sessionToken = token,
+            sha256Preview = passwordHash.take(16).uppercase()
+        )
     }
 
     /**
-     * Valida las credenciales ingresadas comparando el Hash SHA-256 calculado en memoria
-     * con el Hash almacenado en `EncryptedSharedPreferences`.
+     * Valida credenciales comparando el Hash SHA-256 en tiempo constante (`MessageDigest.isEqual`).
      */
     fun authenticateOperator(
         username: String,
@@ -124,7 +149,7 @@ class SecurityManager(context: Context) {
         val storedHash = encryptedPrefs.getString(keyHash(cleanUser), null)
 
         if (storedSalt == null || storedHash == null) {
-            return AuthResult.Error("Operador '$username' no registrado en el almacén cifrado.")
+            return AuthResult.Error("Operador no registrado en el almacén cifrado AES256-GCM.")
         }
 
         val computedHash = hashPasswordSha256(plainPassword, storedSalt)
@@ -147,36 +172,78 @@ class SecurityManager(context: Context) {
                 sha256Preview = computedHash.take(16).uppercase()
             )
         } else {
-            AuthResult.Error("Credenciales inválidas. Verificación de hash SHA-256 rechazada.")
+            AuthResult.Error("Credenciales inválidas. Verificación SHA-256 rechazada.")
         }
     }
 
-    /**
-     * Genera un token de sesión firmado con SHA-256 para autenticar comandos IoT/OT.
-     */
     private fun generateSessionToken(username: String): String {
-        val nonce = UUID.randomUUID().toString().take(8)
+        val customProvisioned = getConfiguredDeviceToken()
+        if (customProvisioned.isNotBlank()) return customProvisioned
+
+        val nonce = UUID.randomUUID().toString().replace("-", "").take(10)
         val raw = "$username|$nonce|${System.currentTimeMillis()}"
-        val sig = hashPasswordSha256(raw, "SESSION_SIG").take(12).uppercase()
+        val sig = hashPasswordSha256(raw, generateSalt()).take(12).uppercase()
         return "INA-$sig"
     }
 
     /**
-     * Verifica si un token recibido en una trama de comando es válido bajo el protocolo ISO 27400.
+     * Valida tokens entrantes en el Nodo Sensor OT usando comparación de tiempo constante
+     * contra el token activo de sesión o el token OT configurado localmente (nunca texto hardcodeado).
      */
-    fun isValidCommandToken(token: String): Boolean {
-        return token.isNotBlank() && (token.startsWith("INA-") || token.length >= 6)
+    fun isValidCommandToken(incomingToken: String): Boolean {
+        val clean = incomingToken.trim()
+        if (clean.length < 8) return false
+
+        val expectedSession = encryptedPrefs.getString(KEY_SESSION_TOKEN, null)
+        val expectedConfigured = getConfiguredDeviceToken()
+
+        val matchesSession = !expectedSession.isNullOrBlank() && MessageDigest.isEqual(
+            clean.toByteArray(Charsets.UTF_8),
+            expectedSession.toByteArray(Charsets.UTF_8)
+        )
+        val matchesConfigured = expectedConfigured.isNotBlank() && MessageDigest.isEqual(
+            clean.toByteArray(Charsets.UTF_8),
+            expectedConfigured.toByteArray(Charsets.UTF_8)
+        )
+        // Permite enlaces entre 2 dispositivos distintos que comparten el prefijo estructurado INA-<12HEX>
+        // únicamente cuando no se ha fijado un token compartido estricto.
+        val matchesStructuredPeer = expectedConfigured.isBlank() &&
+            clean.matches(Regex("^INA-[A-F0-9]{12}$"))
+
+        return matchesSession || matchesConfigured || matchesStructuredPeer
     }
 
     /**
-     * Recupera la sesión cifrada activa si el usuario marcó "Mantener sesión iniciada".
+     * Guarda localmente (cifrado en AES256-GCM) un token compartido OT o endpoint de sincronización,
+     * evitando secretos hardcodeados en el repositorio.
      */
+    fun saveSecureIntegrationConfig(syncEndpointUrl: String, sharedOtToken: String) {
+        encryptedPrefs.edit()
+            .putString(KEY_SYNC_ENDPOINT_URL, syncEndpointUrl.trim())
+            .putString(KEY_SHARED_OT_TOKEN, sharedOtToken.trim())
+            .apply()
+    }
+
+    fun getConfiguredSyncEndpoint(): String {
+        return encryptedPrefs.getString(KEY_SYNC_ENDPOINT_URL, "") ?: ""
+    }
+
+    fun getConfiguredDeviceToken(): String {
+        return encryptedPrefs.getString(KEY_SHARED_OT_TOKEN, "") ?: ""
+    }
+
+    fun maskToken(token: String): String {
+        val t = token.trim()
+        if (t.length <= 6) return "****"
+        return "${t.take(4)}****${t.takeLast(3)}"
+    }
+
     fun restoreActiveSession(): ActiveSession? {
         val keepSession = encryptedPrefs.getBoolean(KEY_KEEP_SESSION, false)
         if (!keepSession) return null
         val operator = encryptedPrefs.getString(KEY_ACTIVE_OPERATOR, null) ?: return null
         val token = encryptedPrefs.getString(KEY_SESSION_TOKEN, null) ?: return null
-        val hashPreview = encryptedPrefs.getString(KEY_ACTIVE_HASH_PREVIEW, "A9F4C2E18B03D711") ?: ""
+        val hashPreview = encryptedPrefs.getString(KEY_ACTIVE_HASH_PREVIEW, "") ?: ""
         return ActiveSession(
             operatorName = operator,
             sessionToken = token,
@@ -184,42 +251,18 @@ class SecurityManager(context: Context) {
         )
     }
 
-    /**
-     * Obtiene un resumen criptográfico del operador actual para mostrar evidencia en la UI académica.
-     */
     fun getStoredHashFingerprint(username: String): String {
         val cleanUser = username.trim().lowercase()
-        val storedHash = encryptedPrefs.getString(keyHash(cleanUser), null) ?: return "SIN_HASH"
+        val storedHash = encryptedPrefs.getString(keyHash(cleanUser), null) ?: return "PENDIENTE_REGISTRO"
         return storedHash.take(20).uppercase() + "..."
     }
 
-    /**
-     * Cierra la sesión eliminando el token activo de `EncryptedSharedPreferences`.
-     */
     fun logoutSecurely() {
         encryptedPrefs.edit()
             .remove(KEY_SESSION_TOKEN)
             .remove(KEY_ACTIVE_OPERATOR)
             .putBoolean(KEY_KEEP_SESSION, false)
             .apply()
-    }
-
-    /**
-     * Persiste la cola temporal de eventos/lecturas Offline en `EncryptedSharedPreferences`.
-     */
-    fun saveOfflineSyncQueue(events: List<OfflineSyncEvent>) {
-        val json = OfflineSyncEvent.toJsonArrayString(events)
-        encryptedPrefs.edit()
-            .putString(KEY_OFFLINE_SYNC_QUEUE, json)
-            .apply()
-    }
-
-    /**
-     * Carga la cola temporal de eventos Offline desde `EncryptedSharedPreferences`.
-     */
-    fun loadOfflineSyncQueue(): List<OfflineSyncEvent> {
-        val raw = encryptedPrefs.getString(KEY_OFFLINE_SYNC_QUEUE, null)
-        return OfflineSyncEvent.fromJsonArrayString(raw)
     }
 
     private fun keySalt(user: String) = "usr_salt_$user"
@@ -242,16 +285,14 @@ class SecurityManager(context: Context) {
     )
 
     companion object {
-        private const val PREFS_FILE_NAME = "inacap_iot_iso27400_secure_prefs"
-        private const val PEPPER_ISO27400 = "INACAP_OT_BARRIER_27400"
+        private const val PREFS_FILE_NAME = "inacap_iot_iso27400_es3_prefs"
+        private const val KEY_DEVICE_PEPPER = "device_keystore_pepper_b64"
         private const val KEY_SESSION_TOKEN = "active_session_token"
         private const val KEY_ACTIVE_OPERATOR = "active_operator_id"
         private const val KEY_ACTIVE_HASH_PREVIEW = "active_hash_preview"
         private const val KEY_KEEP_SESSION = "keep_session_encrypted"
         private const val KEY_LAST_REGISTERED_USER = "last_registered_user"
-        private const val KEY_OFFLINE_SYNC_QUEUE = "offline_sync_queue_encrypted"
-
-        const val DEFAULT_OPERATOR_USER = "admin_inacap"
-        const val DEFAULT_OPERATOR_PASS_INITIAL = "Inacap2026!"
+        private const val KEY_SYNC_ENDPOINT_URL = "configurable_sync_endpoint_url"
+        private const val KEY_SHARED_OT_TOKEN = "configurable_shared_ot_token"
     }
 }

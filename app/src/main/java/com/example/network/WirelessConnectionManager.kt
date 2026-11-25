@@ -40,14 +40,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Gestor de Conectividad Inalámbrica Resiliente (Bluetooth RFCOMM + Sockets TCP LAN/Loopback).
  *
- * Cumple con la Rúbrica Técnica (C, D y E):
- * - Cero bloqueo de UI: Todas las operaciones de red y sockets corren en `Dispatchers.IO`.
- * - Manejo dual de Roles:
- *   1. Cliente ("Estación de Control / Monitoreo") -> Conecta a ESP32 o 2° Android.
- *   2. Servidor ("Nodo Sensor / Simulador OT") -> Escucha conexiones RFCOMM o TCP entrantes.
- * - Tolerancia a fallos: Captura limpia de `IOException`, cierre garantizado (`close()`) en bloque
- *   `finally`, cambio inmediato de estado a `Reconnecting` ("Desconectado - Intentando reconectar...")
- *   y ciclo de reconexión automática con Exponential Backoff.
+ * Cumple con los requisitos de ES3 (TI3042):
+ * - Ejecución exclusiva en `Dispatchers.IO` (cero bloqueo del hilo principal).
+ * - Reconexión automática continua en segundo plano sin reiniciar la app, con espera
+ *   exponencial creciente: `2s -> 4s -> 8s -> 16s -> 30s` (tope de 30s).
+ * - Reinicio automático del contador de backoff a `0` al restablecer la conexión.
+ * - Cierre garantizado de sockets en bloques `finally` y protección de lectura ante tramas corruptas.
  */
 class WirelessConnectionManager(context: Context) {
 
@@ -63,7 +61,6 @@ class WirelessConnectionManager(context: Context) {
     private val _systemEvents = MutableSharedFlow<String>(extraBufferCapacity = 32)
     val systemEvents: SharedFlow<String> = _systemEvents.asSharedFlow()
 
-    // Referencias de sockets activas protegidas para cierre seguro en `finally`
     @Volatile
     private var activeBtSocket: BluetoothSocket? = null
 
@@ -79,7 +76,7 @@ class WirelessConnectionManager(context: Context) {
     @Volatile
     private var activeOutputStream: OutputStream? = null
 
-    // Loopback Server embebido para pruebas de 1 solo equipo con sockets TCP reales
+    // Loopback Server embebido para pruebas con sockets TCP reales en 1 dispositivo
     @Volatile
     private var loopbackServerSocket: ServerSocket? = null
 
@@ -98,14 +95,10 @@ class WirelessConnectionManager(context: Context) {
 
     private val manualDisconnectRequested = AtomicBoolean(false)
 
-    // Últimos parámetros de conexión para reconexión automática con backoff
     private var lastTransportMode: TransportMode = TransportMode.LOCAL_LOOPBACK
     private var lastTargetAddress: String = "127.0.0.1"
     private var lastTargetPort: Int = DEFAULT_TCP_PORT
 
-    /**
-     * Lista los dispositivos Bluetooth emparejados (ej. "ESP32_Barrera_INACAP" o 2° teléfono Android).
-     */
     @SuppressLint("MissingPermission")
     fun getPairedBluetoothDevices(hasPermission: Boolean): List<PairedBtDevice> {
         if (!hasPermission) return emptyList()
@@ -129,10 +122,6 @@ class WirelessConnectionManager(context: Context) {
         }
     }
 
-    /**
-     * Obtiene la dirección IPv4 local del teléfono para mostrarla cuando actúa como
-     * "Nodo Sensor / Simulador OT" por Wi-Fi Local.
-     */
     fun getLocalIpAddress(): String {
         return try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return "127.0.0.1"
@@ -151,8 +140,10 @@ class WirelessConnectionManager(context: Context) {
     }
 
     /**
-     * Inicia conexión como CLIENTE ("Estación de Control") o conexón unificada con soporte
-     * de Reconexión Automática con Backoff Exponencial ante desconexiones abruptas.
+     * Inicia conexión como CLIENTE ("Estación de Control") con reconexión automática indefinida
+     * en segundo plano (`Dispatchers.IO`) sin necesidad de reiniciar la app:
+     * Backoff creciente: 2s -> 4s -> 8s -> 16s -> 30s (tope).
+     * El contador `attempt` se reinicia a 0 cada vez que se logra establecer la conexión.
      */
     fun connectClient(
         transportMode: TransportMode,
@@ -172,7 +163,8 @@ class WirelessConnectionManager(context: Context) {
             }
 
             var attempt = 0
-            while (isActive && !manualDisconnectRequested.get() && attempt <= MAX_RECONNECT_ATTEMPTS) {
+            while (isActive && !manualDisconnectRequested.get()) {
+                var wasConnectedThisCycle = false
                 try {
                     if (attempt == 0) {
                         val label = when (transportMode) {
@@ -183,15 +175,14 @@ class WirelessConnectionManager(context: Context) {
                         _connectionState.value = ConnectionState.Connecting(label)
                         _systemEvents.tryEmit("Iniciando socket en Dispatchers.IO hacia $label...")
                     } else {
-                        val backoffMs = calculateBackoffMs(attempt)
+                        val backoffMs = calculateExponentialBackoffMs(attempt)
                         _connectionState.value = ConnectionState.Reconnecting(
                             attempt = attempt,
-                            maxAttempts = MAX_RECONNECT_ATTEMPTS,
                             nextRetryMs = backoffMs,
-                            reason = "Desconectado - Intentando reconectar..."
+                            reason = "Reconectando en ${backoffMs / 1000}s (backoff exponencial)"
                         )
                         _systemEvents.tryEmit(
-                            "Reconexión automática #$attempt/$MAX_RECONNECT_ATTEMPTS en ${backoffMs}ms..."
+                            "Reconexión automática #$attempt programada en ${backoffMs / 1000}s (sin reiniciar app)..."
                         )
                         delay(backoffMs)
                         if (manualDisconnectRequested.get()) break
@@ -203,34 +194,34 @@ class WirelessConnectionManager(context: Context) {
 
                     when (transportMode) {
                         TransportMode.BLUETOOTH_RFCOMM -> {
-                            runBluetoothClientSession(lastTargetAddress)
+                            runBluetoothClientSession(lastTargetAddress) {
+                                wasConnectedThisCycle = true
+                                attempt = 0 // Reinicio inmediato del contador al reconectar
+                            }
                         }
                         TransportMode.TCP_WIFI_LAN -> {
-                            runTcpClientSession(lastTargetAddress, lastTargetPort, TransportMode.TCP_WIFI_LAN)
+                            runTcpClientSession(lastTargetAddress, lastTargetPort, TransportMode.TCP_WIFI_LAN) {
+                                wasConnectedThisCycle = true
+                                attempt = 0 // Reinicio inmediato del contador al reconectar
+                            }
                         }
                         TransportMode.LOCAL_LOOPBACK -> {
-                            runTcpClientSession("127.0.0.1", DEFAULT_TCP_PORT, TransportMode.LOCAL_LOOPBACK)
+                            runTcpClientSession("127.0.0.1", DEFAULT_TCP_PORT, TransportMode.LOCAL_LOOPBACK) {
+                                wasConnectedThisCycle = true
+                                attempt = 0 // Reinicio inmediato del contador al reconectar
+                            }
                         }
                     }
 
-                    // Si el stream finaliza sin que el usuario haya pedido desconexión manual,
-                    // se trata de una caída abrupta del otro equipo o ESP32.
-                    if (!manualDisconnectRequested.get()) {
-                        attempt++
-                    } else {
-                        break
-                    }
+                    if (manualDisconnectRequested.get()) break
+                    // Si el enlace se perdió tras haber estado conectado, reiniciamos el backoff desde intento #1 (2s)
+                    attempt = if (wasConnectedThisCycle) 1 else (attempt + 1)
                 } catch (e: IOException) {
                     if (manualDisconnectRequested.get()) break
-                    attempt++
+                    attempt = if (wasConnectedThisCycle) 1 else (attempt + 1)
                     _systemEvents.tryEmit(
-                        "IOException capturada limpiamente: ${e.message ?: "Socket cerrado"}. Activando backoff."
+                        "Corte de socket capturado (${e.message ?: "IOException"}). Activando reconexión backoff."
                     )
-                    if (attempt > MAX_RECONNECT_ATTEMPTS) {
-                        _connectionState.value = ConnectionState.Disconnected
-                        _systemEvents.tryEmit("Límite de reconexión alcanzado. Eventos resguardados en cola Offline.")
-                        break
-                    }
                 } catch (e: SecurityException) {
                     _connectionState.value = ConnectionState.Disconnected
                     _systemEvents.tryEmit("Permiso Bluetooth denegado en runtime: ${e.message}")
@@ -240,10 +231,6 @@ class WirelessConnectionManager(context: Context) {
         }
     }
 
-    /**
-     * Inicia modo SERVIDOR ("Nodo Sensor / Simulador OT") para que un 2° teléfono Android
-     * reciba conexiones entrantes por Bluetooth RFCOMM o por Sockets TCP Wi-Fi Local.
-     */
     @SuppressLint("MissingPermission")
     fun startSensorServer(transportMode: TransportMode, port: Int = DEFAULT_TCP_PORT) {
         manualDisconnectRequested.set(false)
@@ -274,12 +261,14 @@ class WirelessConnectionManager(context: Context) {
                             val clientSocket = serverSocket.accept()
                             activeBtSocket = clientSocket
                             activeOutputStream = clientSocket.outputStream
-                            val remoteName = clientSocket.remoteDevice?.name ?: clientSocket.remoteDevice?.address ?: "Cliente BT"
+                            val remoteName = clientSocket.remoteDevice?.name
+                                ?: clientSocket.remoteDevice?.address
+                                ?: "Cliente BT"
                             _connectionState.value = ConnectionState.Connected(
                                 endpointName = "Estación: $remoteName",
                                 transport = TransportMode.BLUETOOTH_RFCOMM
                             )
-                            _systemEvents.tryEmit("Cliente Bluetooth conectado: $remoteName")
+                            _systemEvents.tryEmit("Estación de Control conectada por Bluetooth: $remoteName")
                             try {
                                 readStreamLinesLoop(clientSocket.inputStream) { line ->
                                     _incomingFrames.tryEmit(line)
@@ -359,18 +348,18 @@ class WirelessConnectionManager(context: Context) {
         }
     }
 
-    /**
-     * Ejecuta la sesión de cliente Bluetooth RFCOMM con bloque `finally` garantizado.
-     */
     @SuppressLint("MissingPermission")
-    private suspend fun runBluetoothClientSession(macAddress: String) = withContext(Dispatchers.IO) {
+    private suspend fun runBluetoothClientSession(
+        macAddress: String,
+        onConnectedCallback: () -> Unit
+    ) = withContext(Dispatchers.IO) {
         val btManager = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = btManager?.adapter ?: throw IOException("Adaptador Bluetooth no disponible")
         if (!adapter.isEnabled) throw IOException("Bluetooth desactivado en el dispositivo")
 
         val device = try {
             adapter.getRemoteDevice(macAddress.uppercase())
-        } catch (e: IllegalArgumentException) {
+        } catch (_: IllegalArgumentException) {
             throw IOException("Dirección MAC Bluetooth inválida: $macAddress")
         }
 
@@ -381,32 +370,30 @@ class WirelessConnectionManager(context: Context) {
             activeBtSocket = socket
             socket.connect()
             activeOutputStream = socket.outputStream
+            onConnectedCallback()
 
             val deviceLabel = device.name ?: macAddress
             _connectionState.value = ConnectionState.Connected(
                 endpointName = deviceLabel,
                 transport = TransportMode.BLUETOOTH_RFCOMM
             )
-            _systemEvents.tryEmit("Conectado vía Bluetooth RFCOMM a $deviceLabel")
+            _systemEvents.tryEmit("Conectado vía Bluetooth RFCOMM a $deviceLabel (contador backoff reiniciado)")
 
             readStreamLinesLoop(socket.inputStream) { line ->
                 _incomingFrames.tryEmit(line)
             }
         } finally {
-            // Cierre seguro obligatorio en bloque finally (Requerimiento E)
             activeOutputStream = null
             activeBtSocket = null
             closeSocketQuietly(socket)
         }
     }
 
-    /**
-     * Ejecuta la sesión de cliente TCP con bloque `finally` garantizado.
-     */
     private suspend fun runTcpClientSession(
         host: String,
         port: Int,
-        mode: TransportMode
+        mode: TransportMode,
+        onConnectedCallback: () -> Unit
     ) = withContext(Dispatchers.IO) {
         var socket: Socket? = null
         try {
@@ -415,6 +402,7 @@ class WirelessConnectionManager(context: Context) {
             socket.keepAlive = true
             activeTcpSocket = socket
             activeOutputStream = socket.getOutputStream()
+            onConnectedCallback()
 
             val endpointLabel = if (mode == TransportMode.LOCAL_LOOPBACK) {
                 "ESP32 / Nodo OT Loopback ($host:$port)"
@@ -425,24 +413,18 @@ class WirelessConnectionManager(context: Context) {
                 endpointName = endpointLabel,
                 transport = mode
             )
-            _systemEvents.tryEmit("Socket TCP establecido con $endpointLabel")
+            _systemEvents.tryEmit("Socket TCP establecido con $endpointLabel (contador backoff reiniciado)")
 
             readStreamLinesLoop(socket.getInputStream()) { line ->
                 _incomingFrames.tryEmit(line)
             }
         } finally {
-            // Cierre seguro obligatorio en bloque finally (Requerimiento E)
             activeOutputStream = null
             activeTcpSocket = null
             closeTcpSocketQuietly(socket)
         }
     }
 
-    /**
-     * Servidor TCP Loopback interno en `127.0.0.1:8888` para que la app pueda probarse
-     * con sockets TCP reales en un único dispositivo o emulador sin requerir hardware externo,
-     * además de soportar 2 teléfonos físicos o ESP32 real.
-     */
     private fun ensureLoopbackSensorServerRunning() {
         if (loopbackServerJob?.isActive == true && loopbackServerSocket?.isClosed == false) return
         loopbackServerJob?.cancel()
@@ -462,7 +444,7 @@ class WirelessConnectionManager(context: Context) {
                             _incomingLoopbackServerFrames.tryEmit(line)
                         }
                     } catch (_: IOException) {
-                        // El socket de loopback se cerró; espera el siguiente intento de reconexión
+                        // Espera reconexión automática
                     } finally {
                         loopbackOutputStream = null
                         loopbackClientSocket = null
@@ -470,7 +452,7 @@ class WirelessConnectionManager(context: Context) {
                     }
                 }
             } catch (_: IOException) {
-                // Puerto ya ocupado por modo Servidor explícito
+                // Puerto ocupado por modo Servidor explícito
             } finally {
                 loopbackServerSocket = null
                 closeTcpServerQuietly(server)
@@ -478,26 +460,20 @@ class WirelessConnectionManager(context: Context) {
         }
     }
 
-    /**
-     * Bucle lector no bloqueante en `Dispatchers.IO` que procesa tramas delimitadas por `\n`.
-     */
     private suspend fun readStreamLinesLoop(
         inputStream: InputStream,
         onLineReceived: (String) -> Unit
     ) = withContext(Dispatchers.IO) {
         val reader = BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8))
         while (currentCoroutineContext().isActive) {
-            val line = reader.readLine() ?: throw IOException("Fin de stream (EOF) detectado en el socket remoto")
+            val line = reader.readLine()
+                ?: throw IOException("Fin de stream (EOF) detectado en el socket remoto")
             if (line.isNotBlank()) {
                 onLineReceived(line)
             }
         }
     }
 
-    /**
-     * Envía una trama JSON delimitada por `\n` a través del socket activo en `Dispatchers.IO`.
-     * Retorna `true` si se escribió en el socket, o `false` si está desconectado (para encolar Offline).
-     */
     suspend fun sendFrame(rawLineWithNewline: String): Boolean = withContext(Dispatchers.IO) {
         val out = activeOutputStream ?: return@withContext false
         return@withContext try {
@@ -518,9 +494,6 @@ class WirelessConnectionManager(context: Context) {
         }
     }
 
-    /**
-     * Envía una trama desde el Nodo Sensor embebido (Loopback Server) hacia el cliente TCP conectado.
-     */
     suspend fun sendFromLoopbackSensorServer(rawLineWithNewline: String): Boolean = withContext(Dispatchers.IO) {
         val out = loopbackOutputStream ?: activeOutputStream ?: return@withContext false
         return@withContext try {
@@ -539,14 +512,9 @@ class WirelessConnectionManager(context: Context) {
         }
     }
 
-    /**
-     * Simula una caída abrupta del hardware / corte de energía del ESP32 o del 2° teléfono
-     * cerrando el socket subyacente sin bandera manual para disparar `IOException`, el bloque
-     * `finally` y la Reconexión Automática con Backoff (Requerimiento E).
-     */
     fun simulateAbruptHardwareDisconnect() {
         ioScope.launch {
-            _systemEvents.tryEmit("⚡ Simulando apagado abrupto de nodo remoto (IOException en socket)...")
+            _systemEvents.tryEmit("Corte abrupto simulado (IOException). Activando backoff 2s->4s->8s->16s->30s...")
             forceSocketAbortInternal()
         }
     }
@@ -557,9 +525,6 @@ class WirelessConnectionManager(context: Context) {
         closeTcpSocketQuietly(loopbackClientSocket)
     }
 
-    /**
-     * Desconexión limpia solicitada explícitamente por el operador.
-     */
     fun disconnectGracefully() {
         manualDisconnectRequested.set(true)
         connectionJob?.cancel()
@@ -577,13 +542,26 @@ class WirelessConnectionManager(context: Context) {
             activeTcpServerSocket = null
             loopbackClientSocket = null
             _connectionState.value = ConnectionState.Disconnected
-            _systemEvents.tryEmit("Conexión inalámbrica cerrada de forma segura (finally close).")
+            _systemEvents.tryEmit("Conexión inalámbrica cerrada limpiamente (finally close).")
         }
     }
 
-    private fun calculateBackoffMs(attempt: Int): Long {
-        // Backoff exponencial acotado: 1.5s, 3.0s, 4.5s, 6.0s...
-        return (attempt * 1500L).coerceAtMost(6000L)
+    companion object {
+        val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+        const val BT_SERVICE_NAME = "INACAP_ESP32_BARRERA_OT"
+        const val DEFAULT_TCP_PORT = 8888
+        private const val SOCKET_CONNECT_TIMEOUT_MS = 3500
+        const val MAX_BACKOFF_MS = 30_000L
+
+        /**
+         * Backoff exponencial: 2s -> 4s -> 8s -> 16s -> tope 30s.
+         */
+        fun calculateExponentialBackoffMs(attempt: Int): Long {
+            val safeAttempt = attempt.coerceAtLeast(1)
+            val shift = (safeAttempt - 1).coerceAtMost(4) // 2^0..2^4 => 2s, 4s, 8s, 16s, 32s
+            val computed = 2_000L shl shift
+            return computed.coerceAtMost(MAX_BACKOFF_MS)
+        }
     }
 
     private fun closeSocketQuietly(socket: BluetoothSocket?) {
@@ -612,14 +590,5 @@ class WirelessConnectionManager(context: Context) {
             server?.close()
         } catch (_: IOException) {
         }
-    }
-
-    companion object {
-        // UUID estándar SPP (Serial Port Profile) para ESP32 BluetoothSerial y RFCOMM Android
-        val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-        const val BT_SERVICE_NAME = "INACAP_ESP32_BARRERA_OT"
-        const val DEFAULT_TCP_PORT = 8888
-        private const val SOCKET_CONNECT_TIMEOUT_MS = 3500
-        private const val MAX_RECONNECT_ATTEMPTS = 8
     }
 }

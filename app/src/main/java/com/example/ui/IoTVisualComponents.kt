@@ -20,10 +20,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BluetoothConnected
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.LocalParking
+import androidx.compose.material.icons.filled.ReportProblem
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -46,11 +51,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.ConnectionState
+import com.example.data.UiConnectionHealth
 import com.example.ui.theme.InacapCharcoal
 import com.example.ui.theme.InacapRed
 import com.example.ui.theme.IoTFreeGreen
+import com.example.ui.theme.IoTFreeGreenBg
 import com.example.ui.theme.IoTManualAmber
+import com.example.ui.theme.IoTManualAmberBg
 import com.example.ui.theme.IoTOccupiedRed
+import com.example.ui.theme.IoTOccupiedRedBg
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.LcdBacklightGreen
 import com.example.ui.theme.LcdBezelDark
@@ -58,8 +67,339 @@ import com.example.ui.theme.LcdCharBright
 import com.example.ui.theme.LcdMatrixBg
 
 /**
- * Componente visual interactivo que dibuja en Canvas la Barrera Inteligente (Servomotor Pin 15:
- * 90° Arriba/Abierta vs 0° Abajo/Cerrada) y el haz del Sensor Ultrasónico HC-SR04 (Trig=5, Echo=18).
+ * Letrero Inteligente de Entrada del Estacionamiento:
+ * Muestra plazas libres y capacidad total desde la entrada + marca de hora local de telemetría.
+ */
+@Composable
+fun ParkingEntranceHeaderCard(
+    freeSlots: Int,
+    totalCapacity: Int,
+    parkingStatus: String,
+    lastTelemetryTimestamp: String,
+    modifier: Modifier = Modifier
+) {
+    val safeCapacity = totalCapacity.coerceAtLeast(1)
+    val safeFree = freeSlots.coerceIn(0, safeCapacity)
+    val occupiedCount = safeCapacity - safeFree
+    val availabilityRatio = safeFree.toFloat() / safeCapacity.toFloat()
+    val isFull = safeFree == 0
+    val accentColor = when {
+        isFull -> IoTOccupiedRed
+        availabilityRatio <= 0.25f -> IoTManualAmber
+        else -> IoTFreeGreen
+    }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("parking_entrance_card"),
+        shape = RoundedCornerShape(18.dp),
+        color = InacapCharcoal,
+        tonalElevation = 5.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(InacapCharcoal, Color(0xFF282020))
+                    )
+                )
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        color = accentColor,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.LocalParking,
+                                contentDescription = "Estacionamiento Inteligente",
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "PANEL DE ENTRADA • ESTACIONAMIENTO",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFBDBDBD),
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (isFull) "COMPLETO — SIN PLAZAS" else "PLAZAS DISPONIBLES",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Surface(
+                    color = accentColor.copy(alpha = 0.22f),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .border(1.dp, accentColor, RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        Text(
+                            text = "$safeFree",
+                            style = MaterialTheme.typography.headlineLarge,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.testTag("free_slots_value")
+                        )
+                        Text(
+                            text = " / $safeCapacity",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color(0xFFE0E0E0),
+                            modifier = Modifier.padding(bottom = 3.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            LinearProgressIndicator(
+                progress = { availabilityRatio },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp)),
+                color = accentColor,
+                trackColor = Color(0xFF424240)
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Ocupadas: $occupiedCount • Acceso actual: $parkingStatus",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFFD6D6D6)
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Schedule,
+                        contentDescription = "Hora de última telemetría",
+                        tint = Color(0xFFBDBDBD),
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = lastTelemetryTimestamp,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFFE0E0E0),
+                        modifier = Modifier.testTag("last_telemetry_timestamp")
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Indicador explícito de los 4 estados de salud de conexión requeridos en ES3:
+ * `CONECTADO`, `RECONECTANDO`, `DESCONECTADO` y `SIN DATOS RECIENTES`.
+ */
+@Composable
+fun ConnectionStatusBanner(
+    connectionState: ConnectionState,
+    connectionHealth: UiConnectionHealth,
+    secondsSinceLastTelemetry: Long,
+    modifier: Modifier = Modifier
+) {
+    val detailText = when (connectionHealth) {
+        UiConnectionHealth.CONNECTED -> {
+            val endpoint = (connectionState as? ConnectionState.Connected)?.endpointName ?: "Nodo OT"
+            "CONECTADO • $endpoint (telemetría activa hace ${secondsSinceLastTelemetry}s)"
+        }
+        UiConnectionHealth.RECONNECTING -> {
+            when (connectionState) {
+                is ConnectionState.Reconnecting ->
+                    "RECONECTANDO • Intento #${connectionState.attempt} (próximo reintento en ${connectionState.nextRetryMs / 1000}s • tope 30s)"
+                is ConnectionState.Connecting ->
+                    "RECONECTANDO • Abriendo socket en Dispatchers.IO hacia ${connectionState.targetName}..."
+                else -> "RECONECTANDO • Restableciendo enlace en segundo plano..."
+            }
+        }
+        UiConnectionHealth.NO_RECENT_DATA -> {
+            val suffix = if (secondsSinceLastTelemetry > 0L) {
+                "Hace ${secondsSinceLastTelemetry}s sin telemetría válida"
+            } else {
+                "Esperando primera trama JSON del microcontrolador / nodo"
+            }
+            "SIN DATOS RECIENTES • $suffix"
+        }
+        UiConnectionHealth.DISCONNECTED -> {
+            "DESCONECTADO • Registros guardándose localmente en Room SQLite (synced=false)"
+        }
+    }
+
+    val (bgColor, accentColor, icon) = when (connectionHealth) {
+        UiConnectionHealth.CONNECTED -> Triple(IoTFreeGreenBg, IoTFreeGreen, Icons.Default.BluetoothConnected)
+        UiConnectionHealth.RECONNECTING -> Triple(IoTManualAmberBg, IoTManualAmber, Icons.Default.Sync)
+        UiConnectionHealth.NO_RECENT_DATA -> Triple(Color(0xFFFFF3E0), Color(0xFFE65100), Icons.Default.HourglassEmpty)
+        UiConnectionHealth.DISCONNECTED -> Triple(IoTOccupiedRedBg, IoTOccupiedRed, Icons.Default.ErrorOutline)
+    }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("connection_status_banner"),
+        color = bgColor,
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.5.dp, accentColor.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = connectionHealth.displayLabel,
+                tint = accentColor,
+                modifier = Modifier.size(22.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = connectionHealth.displayLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = accentColor,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.testTag("connection_health_label")
+                )
+                Text(
+                    text = detailText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = InacapCharcoal
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Tira dedicada que muestra la última respuesta `ACK` y el último `ERR` con su marca de hora local.
+ */
+@Composable
+fun AckErrStatusStrip(
+    lastAckSummary: String?,
+    lastAckTimestamp: String?,
+    lastErrSummary: String?,
+    lastErrTimestamp: String?,
+    modifier: Modifier = Modifier
+) {
+    if (lastAckSummary == null && lastErrSummary == null) return
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (lastAckSummary != null) {
+            Surface(
+                color = IoTFreeGreenBg,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("last_ack_card")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .border(1.dp, IoTFreeGreen.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = "Último ACK",
+                        tint = IoTFreeGreen,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = lastAckSummary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = InacapCharcoal,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (lastAckTimestamp != null) {
+                            Text(
+                                text = "Hora local: $lastAckTimestamp",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = IoTFreeGreen
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (lastErrSummary != null) {
+            Surface(
+                color = IoTOccupiedRedBg,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("last_err_card")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .border(1.dp, IoTOccupiedRed.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ReportProblem,
+                        contentDescription = "Último ERR",
+                        tint = IoTOccupiedRed,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = lastErrSummary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = InacapCharcoal,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (lastErrTimestamp != null) {
+                            Text(
+                                text = "Hora local: $lastErrTimestamp",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = IoTOccupiedRed
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Gemelo digital animado en Canvas de la Barrera Inteligente (Servomotor Pin 15: 0° / 90°)
+ * y el Sensor Ultrasónico HC-SR04 (Trig=5, Echo=18).
  */
 @Composable
 fun AnimatedSmartBarrierCanvas(
@@ -124,13 +464,12 @@ fun AnimatedSmartBarrierCanvas(
             Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(145.dp)
+                    .height(140.dp)
             ) {
                 val w = size.width
                 val h = size.height
                 val groundY = h - 22.dp.toPx()
 
-                // Línea de suelo / calzada de estacionamiento
                 drawLine(
                     color = Color(0xFF424240),
                     start = Offset(12.dp.toPx(), groundY),
@@ -139,13 +478,11 @@ fun AnimatedSmartBarrierCanvas(
                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(18f, 10f), 0f)
                 )
 
-                // Pedestal de la barrera (izquierda)
                 val pillarX = 44.dp.toPx()
                 val pillarWidth = 30.dp.toPx()
                 val pillarHeight = 68.dp.toPx()
                 val pillarTopY = groundY - pillarHeight
 
-                // Base de concreto
                 drawRoundRect(
                     color = Color(0xFF52524E),
                     topLeft = Offset(pillarX - 6.dp.toPx(), groundY - 10.dp.toPx()),
@@ -153,7 +490,6 @@ fun AnimatedSmartBarrierCanvas(
                     cornerRadius = CornerRadius(4f, 4f)
                 )
 
-                // Torre Roja INACAP
                 drawRoundRect(
                     color = InacapRed,
                     topLeft = Offset(pillarX, pillarTopY),
@@ -161,21 +497,17 @@ fun AnimatedSmartBarrierCanvas(
                     cornerRadius = CornerRadius(12f, 12f)
                 )
 
-                // Pivote del Servomotor (Pin 15)
                 val pivotCenter = Offset(pillarX + pillarWidth / 2f, pillarTopY + 18.dp.toPx())
                 val armLength = (w * 0.50f).coerceAtMost(195.dp.toPx())
                 val armThickness = 11.dp.toPx()
 
-                // Rotación: 0° = horizontal (cerrada), -90° = vertical hacia arriba (abierta)
                 rotate(degrees = -animatedAngle, pivot = pivotCenter) {
-                    // Brazo blanco reflectante
                     drawRoundRect(
                         color = Color.White,
                         topLeft = Offset(pivotCenter.x, pivotCenter.y - armThickness / 2f),
                         size = Size(armLength, armThickness),
                         cornerRadius = CornerRadius(8f, 8f)
                     )
-                    // Franjas rojas de seguridad vial
                     val stripeWidth = armLength / 6f
                     for (i in 0..2) {
                         val startX = pivotCenter.x + (i * 2 + 1) * stripeWidth
@@ -187,19 +519,9 @@ fun AnimatedSmartBarrierCanvas(
                     }
                 }
 
-                // Eje central metálico del servomotor
-                drawCircle(
-                    color = InacapCharcoal,
-                    radius = 7.dp.toPx(),
-                    center = pivotCenter
-                )
-                drawCircle(
-                    color = Color.White,
-                    radius = 3.dp.toPx(),
-                    center = pivotCenter
-                )
+                drawCircle(color = InacapCharcoal, radius = 7.dp.toPx(), center = pivotCenter)
+                drawCircle(color = Color.White, radius = 3.dp.toPx(), center = pivotCenter)
 
-                // Sensor Ultrasónico HC-SR04 (derecha) y ondas acústicas
                 val sensorX = w - 28.dp.toPx()
                 val sensorY = groundY - 36.dp.toPx()
                 drawRoundRect(
@@ -209,7 +531,6 @@ fun AnimatedSmartBarrierCanvas(
                     cornerRadius = CornerRadius(4f, 4f)
                 )
 
-                // Ondas ultrasónicas hacia el vehículo
                 val waveColor = if (distanceCm in 1..9) IoTOccupiedRed else IoTFreeGreen
                 for (waveIdx in 1..3) {
                     val arcRadius = (waveIdx * 16).dp.toPx()
@@ -224,7 +545,6 @@ fun AnimatedSmartBarrierCanvas(
                     )
                 }
 
-                // Representación de vehículo / objeto según distancia (0..100 cm)
                 val normalizedDist = (distanceCm.coerceIn(0, 100) / 100f)
                 val maxTravel = (sensorX - pillarX - pillarWidth - 70.dp.toPx()).coerceAtLeast(30f)
                 val carRightX = sensorX - 24.dp.toPx() - (normalizedDist * maxTravel)
@@ -238,7 +558,6 @@ fun AnimatedSmartBarrierCanvas(
                         size = Size(carWidth, carHeight),
                         cornerRadius = CornerRadius(10f, 10f)
                     )
-                    // Ruedas del vehículo
                     drawCircle(
                         color = Color.White,
                         radius = 4.5.dp.toPx(),
@@ -273,7 +592,7 @@ fun AnimatedSmartBarrierCanvas(
 }
 
 /**
- * Emulación fiel del módulo físico Pantalla LCD I2C (`0x27`, 16 columnas x 2 filas, `SDA=21`, `SCL=22`).
+ * Emulación fiel del módulo físico Display LCD I2C (`0x27`, 16x2, `SDA=21`, `SCL=22`).
  */
 @Composable
 fun VirtualI2cLcdDisplay(
@@ -297,7 +616,7 @@ fun VirtualI2cLcdDisplay(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "LCD I2C 0x27 (16x2) • SDA:21 SCL:22",
+                    text = "LCD I2C 0x27 (16x2) • PLAZAS + DISTANCIA",
                     style = MaterialTheme.typography.labelSmall,
                     color = LcdBacklightGreen,
                     fontWeight = FontWeight.Bold
@@ -348,82 +667,3 @@ fun VirtualI2cLcdDisplay(
         }
     }
 }
-
-/**
- * Indicador semántico de conectividad IoT (Verde = Conectado, Ámbar = Reconectando/Escuchando, Rojo = Desconectado).
- */
-@Composable
-fun ConnectionStatusBanner(
-    connectionState: ConnectionState,
-    modifier: Modifier = Modifier
-) {
-    val (bgColor, accentColor, icon, text) = when (connectionState) {
-        is ConnectionState.Connected -> Quadruple(
-            Color(0xFFE8F5E9),
-            IoTFreeGreen,
-            Icons.Default.BluetoothConnected,
-            "CONECTADO • ${connectionState.endpointName}"
-        )
-        is ConnectionState.Reconnecting -> Quadruple(
-            Color(0xFFFFF8E1),
-            IoTManualAmber,
-            Icons.Default.Sync,
-            "${connectionState.reason} (Intento ${connectionState.attempt}/${connectionState.maxAttempts} • Backoff ${connectionState.nextRetryMs}ms)"
-        )
-        is ConnectionState.ListeningServer -> Quadruple(
-            Color(0xFFFFF8E1),
-            IoTManualAmber,
-            Icons.Default.WifiTethering,
-            "SERVIDOR OT ACTIVO • Escuchando en ${connectionState.endpointInfo}"
-        )
-        is ConnectionState.Connecting -> Quadruple(
-            Color(0xFFFFF8E1),
-            IoTManualAmber,
-            Icons.Default.Sync,
-            "Conectando socket en Dispatchers.IO hacia ${connectionState.targetName}..."
-        )
-        is ConnectionState.Disconnected -> Quadruple(
-            Color(0xFFFFEBEE),
-            IoTOccupiedRed,
-            Icons.Default.ErrorOutline,
-            "DESCONECTADO • Modo Offline Cifrado listo para encolar eventos"
-        )
-    }
-
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .testTag("connection_status_banner"),
-        color = bgColor,
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, accentColor.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = "Estado de conexión",
-                tint = accentColor,
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(modifier = Modifier.width(10.dp))
-            Text(
-                text = text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF1D1D1B),
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
-}
-
-private data class Quadruple<A, B, C, D>(
-    val first: A,
-    val second: B,
-    val third: C,
-    val fourth: D
-)

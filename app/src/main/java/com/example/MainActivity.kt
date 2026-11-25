@@ -28,12 +28,10 @@ import com.example.ui.theme.InacapIoTTheme
 import com.example.viewmodel.MainViewModel
 
 /**
- * Actividad Principal del Sistema de Control y Monitoreo de Barrera Inteligente (INACAP IoT/OT).
+ * Actividad Principal — INACAP Barrera IoT (ES3 TI3042).
  *
- * Implementa:
- * - Gestión dinámica de permisos en Runtime según nivel de API (Android 12+ vs Android 11 o inferior)
- *   bajo ISO/IEC 27400 sin crasheos ante denegación.
- * - Retención de estado y socket activo en `MainViewModel` ante rotación de pantalla.
+ * - Gestiona permisos dinámicos según nivel de API (Android 12+ vs Android ≤11) sin cierres inesperados.
+ * - Conserva estado, conexión inalámbrica y cola Room en `MainViewModel` ante rotación de pantalla.
  */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,7 +52,6 @@ fun SmartBarrierApp(
     val context = LocalContext.current
     val uiState by mainViewModel.uiState.collectAsStateWithLifecycle()
 
-    // Permisos requeridos según versión de Android (Rúbrica B: API 31+ vs API <= 30)
     val requiredWirelessPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         arrayOf(
             Manifest.permission.BLUETOOTH_SCAN,
@@ -77,7 +74,6 @@ fun SmartBarrierApp(
         )
     }
 
-    // Verificar estado actual de permisos al iniciar o rotar pantalla
     LaunchedEffect(Unit) {
         val missing = requiredWirelessPermissions.filter { perm ->
             ContextCompat.checkSelfPermission(context, perm) != PackageManager.PERMISSION_GRANTED
@@ -100,8 +96,8 @@ fun SmartBarrierApp(
                 onLoginSubmit = { user, pass, keep ->
                     mainViewModel.login(user, pass, keep)
                 },
-                onRegisterOrUpdate = { user, pass ->
-                    mainViewModel.registerOrUpdateOperator(user, pass)
+                onRegisterOrUpdate = { user, pass, autoSignIn ->
+                    mainViewModel.registerOrUpdateOperator(user, pass, autoSignIn)
                 }
             )
         } else {
@@ -126,13 +122,19 @@ fun SmartBarrierApp(
                 onConnectOrStartSocket = mainViewModel::connectOrStartRoleSocket,
                 onDisconnectSocket = mainViewModel::disconnectSocket,
                 onSimulateAbruptDisconnect = mainViewModel::triggerSimulatedDisconnectFault,
+                onToggleTelemetryPause = mainViewModel::toggleTelemetryPauseForStaleTest,
                 onRefreshDevices = mainViewModel::refreshPairedDevices,
                 onOpenBarrier = mainViewModel::sendOpenBarrierCommand,
                 onCloseBarrier = mainViewModel::sendCloseBarrierCommand,
                 onSetAutoMode = mainViewModel::sendAutoModeCommand,
                 onRequestStatus = mainViewModel::sendRequestStatusCommand,
+                onSendValidatedAngle = mainViewModel::sendValidatedBarrierAngleInput,
+                onSendValidatedCapacity = mainViewModel::sendValidatedCapacityUpdate,
+                onSendProtocolFaultProbe = mainViewModel::sendProtocolFaultProbe,
                 onSensorDistanceSliderChange = mainViewModel::onSimulatedSensorDistanceChanged,
-                onFlushOfflineQueue = mainViewModel::flushOfflineSyncQueue,
+                onSyncPendingRoom = mainViewModel::syncPendingRoomRecords,
+                onClearSyncedRoom = mainViewModel::clearSyncedRoomHistory,
+                onSaveSecureConfig = mainViewModel::saveSecurityAndSyncConfig,
                 onClearAuditLogs = mainViewModel::clearAuditLogs,
                 onLogout = mainViewModel::logout
             )
