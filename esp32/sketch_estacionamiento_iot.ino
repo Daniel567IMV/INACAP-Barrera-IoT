@@ -153,41 +153,29 @@ void setup() {
   inicializarNvs();
 
 #if ENABLE_WIFI_TCP
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("WiFi: Conectando");
-  lcd.setCursor(0, 1);
-  lcd.print(WIFI_SSID);
+  // Modo Híbrido AP + STA: Crea red propia con IP fija 192.168.4.1 y además conecta a red externa
+  WiFi.mode(WIFI_AP_STA);
 
-  WiFi.mode(WIFI_STA);
+  IPAddress apIP(192, 168, 4, 1);
+  IPAddress apGateway(192, 168, 4, 1);
+  IPAddress apSubnet(255, 255, 255, 0);
+  WiFi.softAPConfig(apIP, apGateway, apSubnet);
+  WiFi.softAP("ESP32_Barrera_INACAP", "lukas123456");
+  Serial.println("[WIFI AP] Red generada: 'ESP32_Barrera_INACAP' | IP fija: 192.168.4.1");
+
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.printf("[WIFI] Conectando a red: '%s'...\n", WIFI_SSID);
+  Serial.printf("[WIFI STA] Asociando a red '%s'...\n", WIFI_SSID);
 
-  // Intento de conexión inicial (hasta 6 segundos en setup para mostrar IP en LCD)
-  unsigned long t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - t0 < 6000)) {
-    delay(300);
-    Serial.print(".");
-  }
-  Serial.println();
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("[WIFI] Conectado exitosamente! IP asignada: ");
-    Serial.println(WiFi.localIP());
-    Serial.printf("[WIFI] Servidor TCP escuchando en puerto %d\n", TCP_SERVER_PORT);
-
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("WiFi: Conectado!");
-    lcd.setCursor(0, 1);
-    lcd.print(WiFi.localIP().toString());
-    delay(2500); // Muestra la IP en pantalla para que el usuario pueda verla
-  } else {
-    Serial.println("[WIFI] Conectando en segundo plano...");
-  }
   tcpServer.begin();
   tcpServer.setNoDelay(true);
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("WiFi AP: 192.168");
+  lcd.setCursor(0, 1);
+  lcd.print(".4.1 Puerto 8888");
+  delay(2000);
 #endif
 
 #if ENABLE_BLUETOOTH
@@ -224,39 +212,30 @@ void loop() {
   unsigned long ahora = millis();
 
 #if ENABLE_WIFI_TCP
-  // Gestión de reconexión y servidor TCP Wi-Fi
-  static bool wifiPrev = false;
-  if (WiFi.status() == WL_CONNECTED) {
-    if (!wifiPrev) {
-      wifiPrev = true;
-      Serial.print("[WIFI] Conectado! IP: ");
-      Serial.println(WiFi.localIP());
+  // Servidor TCP siempre activo en 192.168.4.1 y en la IP asignada
+  if (!tcpClient || !tcpClient.connected()) {
+    WiFiClient nuevo = tcpServer.available();
+    if (nuevo) {
+      tcpClient = nuevo;
+      tcpClient.setNoDelay(true);
+      Serial.println("[TCP] ¡App Android conectada exitosamente al servidor Wi-Fi!");
     }
-    if (!tcpClient || !tcpClient.connected()) {
-      WiFiClient nuevo = tcpServer.available();
-      if (nuevo) {
-        tcpClient = nuevo;
-        tcpClient.setNoDelay(true);
-        Serial.println("[TCP] App Android conectada vía Wi-Fi!");
-      }
+  }
+  while (tcpClient && tcpClient.connected() && tcpClient.available()) {
+    char c = (char)tcpClient.read();
+    if (c == '\n') {
+      rxBufferTcp.trim();
+      if (rxBufferTcp.length() > 0) procesarComando(rxBufferTcp);
+      rxBufferTcp = "";
+    } else if (c != '\r' && rxBufferTcp.length() < 256) {
+      rxBufferTcp += c;
     }
-    while (tcpClient && tcpClient.connected() && tcpClient.available()) {
-      char c = (char)tcpClient.read();
-      if (c == '\n') {
-        rxBufferTcp.trim();
-        if (rxBufferTcp.length() > 0) procesarComando(rxBufferTcp);
-        rxBufferTcp = "";
-      } else if (c != '\r' && rxBufferTcp.length() < 256) {
-        rxBufferTcp += c;
-      }
-    }
-  } else {
-    wifiPrev = false;
-    if (ahora - ultimoReintentoWifiMs >= 8000) {
-      ultimoReintentoWifiMs = ahora;
-      Serial.printf("[WIFI] Reintentando conexión a '%s'...\n", WIFI_SSID);
-      WiFi.begin(WIFI_SSID, WIFI_PASS);
-    }
+  }
+
+  // Reintento de asociación a red externa cada 10s si no está conectada
+  if (WiFi.status() != WL_CONNECTED && (ahora - ultimoReintentoWifiMs >= 10000)) {
+    ultimoReintentoWifiMs = ahora;
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
   }
 #endif
 
