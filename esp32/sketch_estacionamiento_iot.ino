@@ -16,7 +16,10 @@
 #include <LiquidCrystal_I2C.h>
 #include <ESP32Servo.h>
 #include <Preferences.h>
+#include <esp_task_wdt.h>
 #include "BluetoothSerial.h"
+
+#define WDT_TIMEOUT_SECONDS 8
 
 // Carga credenciales fuera de Git (`esp32/secrets.h`, ver `esp32/secrets.example.h`)
 #if __has_include("secrets.h")
@@ -188,9 +191,25 @@ void setup() {
   tcpServer.begin();
   tcpServer.setNoDelay(true);
 #endif
+
+  // Watchdog de Hardware (Clase 15: "Que no se caiga")
+  // Si el microcontrolador deja de responder por > 8s, se reinicia y vuelve a Estado Seguro (0°)
+  #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5)
+    esp_task_wdt_config_t twdt_config = {
+      .timeout_ms = WDT_TIMEOUT_SECONDS * 1000,
+      .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
+      .trigger_panic = true
+    };
+    esp_task_wdt_init(&twdt_config);
+  #else
+    esp_task_wdt_init(WDT_TIMEOUT_SECONDS, true);
+  #endif
+  esp_task_wdt_add(NULL);
+  Serial.printf("[WDT] Hardware Watchdog activado (%d segundos timeout)\n", WDT_TIMEOUT_SECONDS);
 }
 
 void loop() {
+  esp_task_wdt_reset(); // Alimenta el Watchdog en cada ciclo
   unsigned long ahoraMs = millis();
 
   // 1A. Lectura no bloqueante de comandos JSON + '\n' por Bluetooth SPP
