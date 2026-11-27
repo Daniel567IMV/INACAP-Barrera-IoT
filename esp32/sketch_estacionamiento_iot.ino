@@ -183,7 +183,11 @@ void setup() {
   inicializarNvsBuffer();
 
 #ifdef BT_PIN_CODE
-  SerialBT.setPin(BT_PIN_CODE);
+  #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+    SerialBT.setPin(BT_PIN_CODE, (uint8_t)strlen(BT_PIN_CODE));
+  #else
+    SerialBT.setPin(BT_PIN_CODE);
+  #endif
 #endif
   SerialBT.begin(BT_DEVICE_NAME);
   Serial.printf("Nodo OT ESP32 listo: Bluetooth '%s' | NVS pendientes=%u\n",
