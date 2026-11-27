@@ -1,8 +1,7 @@
 /**
  * SISTEMA DE ESTACIONAMIENTO INTELIGENTE Y CONTROL DE BARRERA (ES3 — TI3042)
  * Hardware: ESP32 DevKit + HC-SR04 + Servo SG90 + LCD 1602 I2C (0x27)
- * Conectividad: Bluetooth Clásico SPP (UUID 00001101-0000-1000-8000-00805F9B34FB)
- * Almacenamiento Offline: Memoria Flash NVS (Preferences)
+ * Conectividad: Sockets Wi-Fi TCP (Puerto 8888) + Almacenamiento Offline en Flash NVS
  */
 
 #include <Wire.h>
@@ -10,7 +9,6 @@
 #include <ESP32Servo.h>
 #include <Preferences.h>
 #include <esp_task_wdt.h>
-#include "BluetoothSerial.h"
 
 #define WDT_TIMEOUT_SECONDS 8
 
@@ -20,22 +18,38 @@
   #include "secrets_local.h"
 #endif
 
-#ifndef BT_DEVICE_NAME
-  #define BT_DEVICE_NAME "ESP32_Barrera_INACAP"
+#ifndef ENABLE_WIFI_TCP
+  #define ENABLE_WIFI_TCP 1
 #endif
 
-#ifndef ENABLE_WIFI_TCP
-  #define ENABLE_WIFI_TCP 0
+#ifndef ENABLE_BLUETOOTH
+  #define ENABLE_BLUETOOTH 0
+#endif
+
+#if ENABLE_BLUETOOTH
+  #include "BluetoothSerial.h"
+  #ifndef BT_DEVICE_NAME
+    #define BT_DEVICE_NAME "ESP32_Barrera_INACAP"
+  #endif
+  BluetoothSerial SerialBT;
+  String rxBufferBt = "";
 #endif
 
 #if ENABLE_WIFI_TCP
   #include <WiFi.h>
+  #ifndef WIFI_SSID
+    #define WIFI_SSID "Daniel"
+  #endif
+  #ifndef WIFI_PASS
+    #define WIFI_PASS "lukas123456"
+  #endif
   #ifndef TCP_SERVER_PORT
     #define TCP_SERVER_PORT 8888
   #endif
   WiFiServer tcpServer(TCP_SERVER_PORT);
   WiFiClient tcpClient;
   unsigned long ultimoReintentoWifiMs = 0;
+  String rxBufferTcp = "";
 #endif
 
 // Pines de Hardware
@@ -46,7 +60,6 @@ const int servoPin = 15;
 // Periféricos
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 Servo barreraServo;
-BluetoothSerial SerialBT;
 Preferences prefs;
 
 // Estructura de registro offline en Flash NVS (16 bytes exactos)
@@ -84,11 +97,6 @@ unsigned long ultimoMuestreoNvsMs = 0;
 const unsigned long INTERVALO_MUESTREO_MS    = 250;
 const unsigned long INTERVALO_TELEMETRIA_MS  = 1000;
 const unsigned long INTERVALO_NVS_OFFLINE_MS = 5000;
-
-String rxBufferBt = "";
-#if ENABLE_WIFI_TCP
-String rxBufferTcp = "";
-#endif
 
 // Declaración de funciones
 long medirDistanciaCm();
@@ -144,26 +152,54 @@ void setup() {
   // Cargar registros NVS
   inicializarNvs();
 
-  // Bluetooth Clásico SPP
-#ifdef BT_PIN_CODE
-  #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
-    SerialBT.setPin(BT_PIN_CODE, (uint8_t)strlen(BT_PIN_CODE));
-  #else
-    SerialBT.setPin(BT_PIN_CODE);
-  #endif
-#endif
-  SerialBT.begin(BT_DEVICE_NAME);
-  Serial.printf("[BT] Servidor listo como '%s' | Pendientes NVS: %u\n", BT_DEVICE_NAME, nvsCount);
-
 #if ENABLE_WIFI_TCP
-  #ifdef WIFI_SSID
-    WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(true);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    Serial.printf("[WIFI] Conectando a '%s'...\n", WIFI_SSID);
-  #endif
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("WiFi: Conectando");
+  lcd.setCursor(0, 1);
+  lcd.print(WIFI_SSID);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.printf("[WIFI] Conectando a red: '%s'...\n", WIFI_SSID);
+
+  // Intento de conexión inicial (hasta 6 segundos en setup para mostrar IP en LCD)
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - t0 < 6000)) {
+    delay(300);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("[WIFI] Conectado exitosamente! IP asignada: ");
+    Serial.println(WiFi.localIP());
+    Serial.printf("[WIFI] Servidor TCP escuchando en puerto %d\n", TCP_SERVER_PORT);
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("WiFi: Conectado!");
+    lcd.setCursor(0, 1);
+    lcd.print(WiFi.localIP().toString());
+    delay(2500); // Muestra la IP en pantalla para que el usuario pueda verla
+  } else {
+    Serial.println("[WIFI] Conectando en segundo plano...");
+  }
   tcpServer.begin();
   tcpServer.setNoDelay(true);
+#endif
+
+#if ENABLE_BLUETOOTH
+  #ifdef BT_PIN_CODE
+    #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+      SerialBT.setPin(BT_PIN_CODE, (uint8_t)strlen(BT_PIN_CODE));
+    #else
+      SerialBT.setPin(BT_PIN_CODE);
+    #endif
+  #endif
+  SerialBT.begin(BT_DEVICE_NAME);
+  Serial.printf("[BT] Servidor listo como '%s'\n", BT_DEVICE_NAME);
 #endif
 
   // Watchdog de Hardware (8 segundos de timeout)
@@ -187,24 +223,22 @@ void loop() {
   esp_task_wdt_reset();
   unsigned long ahora = millis();
 
-  // 1. Recepción de comandos por Bluetooth SPP
-  while (SerialBT.available()) {
-    char c = (char)SerialBT.read();
-    if (c == '\n') {
-      rxBufferBt.trim();
-      if (rxBufferBt.length() > 0) procesarComando(rxBufferBt);
-      rxBufferBt = "";
-    } else if (c != '\r' && rxBufferBt.length() < 256) {
-      rxBufferBt += c;
-    }
-  }
-
 #if ENABLE_WIFI_TCP
-  // Recepción Wi-Fi opcional
+  // Gestión de reconexión y servidor TCP Wi-Fi
+  static bool wifiPrev = false;
   if (WiFi.status() == WL_CONNECTED) {
+    if (!wifiPrev) {
+      wifiPrev = true;
+      Serial.print("[WIFI] Conectado! IP: ");
+      Serial.println(WiFi.localIP());
+    }
     if (!tcpClient || !tcpClient.connected()) {
       WiFiClient nuevo = tcpServer.available();
-      if (nuevo) { tcpClient = nuevo; tcpClient.setNoDelay(true); }
+      if (nuevo) {
+        tcpClient = nuevo;
+        tcpClient.setNoDelay(true);
+        Serial.println("[TCP] App Android conectada vía Wi-Fi!");
+      }
     }
     while (tcpClient && tcpClient.connected() && tcpClient.available()) {
       char c = (char)tcpClient.read();
@@ -216,10 +250,30 @@ void loop() {
         rxBufferTcp += c;
       }
     }
+  } else {
+    wifiPrev = false;
+    if (ahora - ultimoReintentoWifiMs >= 8000) {
+      ultimoReintentoWifiMs = ahora;
+      Serial.printf("[WIFI] Reintentando conexión a '%s'...\n", WIFI_SSID);
+      WiFi.begin(WIFI_SSID, WIFI_PASS);
+    }
   }
 #endif
 
-  // 2. Muestreo del sensor ultrasónico cada 250 ms
+#if ENABLE_BLUETOOTH
+  while (SerialBT.available()) {
+    char c = (char)SerialBT.read();
+    if (c == '\n') {
+      rxBufferBt.trim();
+      if (rxBufferBt.length() > 0) procesarComando(rxBufferBt);
+      rxBufferBt = "";
+    } else if (c != '\r' && rxBufferBt.length() < 256) {
+      rxBufferBt += c;
+    }
+  }
+#endif
+
+  // Muestreo del sensor ultrasónico cada 250 ms
   if (ahora - ultimoMuestreoMs >= INTERVALO_MUESTREO_MS) {
     ultimoMuestreoMs = ahora;
     distanciaCm = medirDistanciaCm();
@@ -227,13 +281,13 @@ void loop() {
     actualizarLcd();
   }
 
-  // 3. Envío de telemetría periódica cada 1 segundo
+  // Envío de telemetría periódica cada 1 segundo
   if (ahora - ultimaTelemetriaMs >= INTERVALO_TELEMETRIA_MS) {
     ultimaTelemetriaMs = ahora;
     enviarTelemetria();
   }
 
-  // 4. Registro offline en Flash NVS si no hay enlace activo (cada 5 segundos)
+  // Registro offline en Flash NVS si la app está desconectada (cada 5 segundos)
   if (!hayClienteActivo()) {
     if (ahora - ultimoMuestreoNvsMs >= INTERVALO_NVS_OFFLINE_MS) {
       ultimoMuestreoNvsMs = ahora;
@@ -250,7 +304,7 @@ long medirDistanciaCm() {
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
 
-  long duracion = pulseIn(echoPin, HIGH, 30000); // Timeout 30ms (~5 metros)
+  long duracion = pulseIn(echoPin, HIGH, 30000);
   if (duracion <= 0) return 999;
   long dist = duracion / 58;
   return constrain(dist, 0, 400);
@@ -261,7 +315,6 @@ void evaluarLogicaControl() {
   bool ocupado = (distanciaCm <= umbralOcupacionCm && distanciaCm > 0);
   estadoParking = ocupado ? "OCUPADO" : "LIBRE";
 
-  // Transición de LIBRE a OCUPADO (ingreso de vehículo)
   if (ocupado && !plazaPreviaOcupada) {
     if (plazasLibres > 0) plazasLibres--;
     plazaPreviaOcupada = true;
@@ -269,7 +322,6 @@ void evaluarLogicaControl() {
     plazaPreviaOcupada = false;
   }
 
-  // En modo AUTO, la barrera abre si detecta vehículo y hay plazas
   if (modoOperacion == "AUTO") {
     int nuevoAngulo = (ocupado && plazasLibres > 0) ? 90 : 0;
     if (nuevoAngulo != anguloBarrera) {
@@ -293,17 +345,21 @@ void actualizarLcd() {
 }
 
 bool hayClienteActivo() {
-  if (SerialBT.hasClient()) return true;
 #if ENABLE_WIFI_TCP
   if (tcpClient && tcpClient.connected()) return true;
+#endif
+#if ENABLE_BLUETOOTH
+  if (SerialBT.hasClient()) return true;
 #endif
   return false;
 }
 
 void enviarLinea(const String& linea) {
-  if (SerialBT.hasClient()) SerialBT.println(linea);
 #if ENABLE_WIFI_TCP
   if (tcpClient && tcpClient.connected()) tcpClient.println(linea);
+#endif
+#if ENABLE_BLUETOOTH
+  if (SerialBT.hasClient()) SerialBT.println(linea);
 #endif
   Serial.println(linea);
 }
@@ -331,7 +387,7 @@ void enviarErr(const String& code, const String& reqId, const String& detail) {
   enviarLinea(e);
 }
 
-// Procesador de comandos JSON
+// Procesador de comandos JSON recibidos desde Android
 void procesarComando(const String& json) {
   String cmd   = extraerJsonString(json, "cmd");
   String reqId = extraerJsonString(json, "id");
@@ -379,7 +435,7 @@ void procesarComando(const String& json) {
   actualizarLcd();
 }
 
-// Almacenamiento Offline en Flash NVS (Preferences)
+// Almacenamiento Offline en Flash NVS
 void inicializarNvs() {
   prefs.begin(NVS_NAMESPACE, false);
   nvsHead = prefs.getUShort("head", 0);
@@ -438,7 +494,6 @@ void flushNvsAlCliente(const String& reqId) {
     }
   }
 
-  // Limpiar registros volcados
   nvsHead = 0;
   nvsCount = 0;
   prefs.putUShort("head", 0);
@@ -446,7 +501,6 @@ void flushNvsAlCliente(const String& reqId) {
   enviarAck("FLUSH_BUFFER", reqId, "Descargados " + String(total) + " registros offline exitosamente");
 }
 
-// Helpers JSON ligeros (sin librerías pesadas)
 String extraerJsonString(const String& json, const String& clave) {
   String token = "\"" + clave + "\":";
   int idx = json.indexOf(token);
