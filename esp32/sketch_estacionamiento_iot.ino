@@ -352,7 +352,7 @@ long medirDistanciaCm() {
   digitalWrite(trigPin, LOW);
 
   long duracion = pulseIn(echoPin, HIGH, 30000);
-  if (duracion <= 0) return 999;
+  if (duracion <= 0) return 400; // 400 cm es el máximo válido en el protocolo de la App
   long dist = duracion / 58;
   return constrain(dist, 0, 400);
 }
@@ -545,6 +545,7 @@ void procesarComando(const String& json) {
     enviarErr("UNKNOWN_CMD", reqId, "Comando desconocido: " + cmd);
   }
   actualizarLcd();
+  enviarTelemetria(); // Notifica el nuevo estado al instante a la App
 }
 
 // Almacenamiento Offline en Flash NVS

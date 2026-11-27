@@ -851,6 +851,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             if (sent) {
                 appendAuditLog("CMD", "TX -> $redactedLine")
+                if (cmd == "SET_BARRERA") {
+                    _uiState.update { state ->
+                        state.copy(barrierAngle = value, operationMode = "MANUAL")
+                    }
+                } else if (cmd == "SET_MODO") {
+                    _uiState.update { state ->
+                        state.copy(operationMode = modo)
+                    }
+                }
                 // Persistir evento ya sincronizado en Room con clave única
                 syncRepository.recordEvent(
                     SyncRecordEntity(

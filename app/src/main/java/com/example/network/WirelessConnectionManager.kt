@@ -396,9 +396,10 @@ class WirelessConnectionManager(context: Context) {
         onConnectedCallback: () -> Unit
     ) = withContext(Dispatchers.IO) {
         var socket: Socket? = null
+        val cleanHost = host.trim()
         try {
             socket = Socket()
-            socket.connect(InetSocketAddress(host, port), SOCKET_CONNECT_TIMEOUT_MS)
+            socket.connect(InetSocketAddress(cleanHost, port), SOCKET_CONNECT_TIMEOUT_MS)
             socket.keepAlive = true
             activeTcpSocket = socket
             activeOutputStream = socket.getOutputStream()
