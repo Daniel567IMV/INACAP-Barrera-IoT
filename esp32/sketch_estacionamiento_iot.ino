@@ -153,29 +153,55 @@ void setup() {
   inicializarNvs();
 
 #if ENABLE_WIFI_TCP
-  // Modo Híbrido AP + STA: Crea red propia con IP fija 192.168.4.1 y además conecta a red externa
-  WiFi.mode(WIFI_AP_STA);
-
-  IPAddress apIP(192, 168, 4, 1);
-  IPAddress apGateway(192, 168, 4, 1);
-  IPAddress apSubnet(255, 255, 255, 0);
-  WiFi.softAPConfig(apIP, apGateway, apSubnet);
-  WiFi.softAP("ESP32_Barrera_INACAP", "lukas123456");
-  Serial.println("[WIFI AP] Red generada: 'ESP32_Barrera_INACAP' | IP fija: 192.168.4.1");
-
+  // Modo Estación (STA): Conecta a la red Wi-Fi 'Daniel'
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true);
+  delay(100);
   WiFi.setAutoReconnect(true);
+  #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+    WiFi.setSleep(false);
+  #endif
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.printf("[WIFI STA] Asociando a red '%s'...\n", WIFI_SSID);
-
-  tcpServer.begin();
-  tcpServer.setNoDelay(true);
 
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("WiFi AP: 192.168");
+  lcd.print("Conectando WiFi:");
   lcd.setCursor(0, 1);
-  lcd.print(".4.1 Puerto 8888");
-  delay(2000);
+  lcd.print(WIFI_SSID);
+
+  Serial.printf("[WIFI] Conectando a red: '%s' (clave: '%s')...\n", WIFI_SSID, WIFI_PASS);
+
+  // Intentar conectar durante 10 segundos
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - t0 < 10000)) {
+    delay(400);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("[WIFI] ¡Conectado exitosamente! IP asignada: ");
+    Serial.println(WiFi.localIP());
+    Serial.printf("[WIFI] Servidor TCP escuchando en puerto %d\n", TCP_SERVER_PORT);
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("WiFi Conectado!");
+    lcd.setCursor(0, 1);
+    lcd.print(WiFi.localIP().toString());
+    delay(4000); // Muestra la IP durante 4 segundos para que puedas ingresarla en la App
+  } else {
+    Serial.printf("[WIFI] No conectó aún (Estado: %d). Reintentando en loop...\n", (int)WiFi.status());
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("WiFi reintentando");
+    lcd.setCursor(0, 1);
+    lcd.print("Verificar 2.4GHz");
+    delay(2000);
+  }
+
+  tcpServer.begin();
+  tcpServer.setNoDelay(true);
 #endif
 
 #if ENABLE_BLUETOOTH
