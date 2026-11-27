@@ -154,12 +154,20 @@ void setup() {
   lcd.setCursor(0, 1);
   lcd.print("BARRERA SEG 0G");
 
-  // Estado seguro obligatorio al energizar: barrera cerrada (0°)
+  // Permitir asignación de todos los temporizadores PWM para compatibilidad con ESP32-WROOM-32D y Bluetooth
   ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
   barreraServo.setPeriodHertz(50);
   barreraServo.attach(servoPin, 500, 2400);
+
+  // Auto-calibración inicial visible: barrera sube a 90° y baja a 0° (Estado Seguro Failsafe)
+  barreraServo.write(90);
+  delay(500);
   anguloBarrera = 0;
   barreraServo.write(anguloBarrera);
+  delay(300);
 
   inicializarNvsBuffer();
 
@@ -479,6 +487,9 @@ void procesarTramaComando(const String& jsonLine) {
   String modo = extraerValorJsonString(jsonLine, "modo");
   int val     = -1;
   bool hasNumericVal = extraerValorJsonIntEstricto(jsonLine, "val", val);
+  if (!hasNumericVal) {
+    hasNumericVal = extraerValorJsonIntEstricto(jsonLine, "angle", val);
+  }
 
   if (cmd.length() == 0) {
     enviarErr("CORRUPT_FRAME", reqId, "Campo 'cmd' ausente en trama JSON");

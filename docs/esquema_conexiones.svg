@@ -38,23 +38,24 @@
   <text x="180" y="445" text-anchor="middle" fill="#212529" font-size="12" font-weight="bold">Umbral AUTO: &lt; 10 cm = OCUPADO</text>
 
   <!-- SG90 Top Right -->
-  <rect x="885" y="130" width="270" height="190" rx="12" fill="#FFFFFF" stroke="#FD7E14" stroke-width="3"/>
+  <rect x="885" y="130" width="270" height="205" rx="12" fill="#FFFFFF" stroke="#FD7E14" stroke-width="3"/>
   <rect x="885" y="130" width="270" height="42" rx="10" fill="#FD7E14"/>
   <text x="1020" y="157" text-anchor="middle" fill="#FFFFFF" font-size="16" font-weight="bold">Servomotor SG90 (Barrera)</text>
-  <text x="1020" y="205" text-anchor="middle" fill="#212529" font-size="13">Señal PWM (50 Hz): GPIO 15</text>
-  <text x="1020" y="232" text-anchor="middle" fill="#212529" font-size="13">Rojo: 5V · Café/Negro: GND</text>
-  <text x="1020" y="268" text-anchor="middle" fill="#E30613" font-size="13" font-weight="bold">0° = Cerrada (Estado Seguro)</text>
-  <text x="1020" y="292" text-anchor="middle" fill="#198754" font-size="13" font-weight="bold">90° = Abierta (Paso Vehicular)</text>
+  <text x="1020" y="195" text-anchor="middle" fill="#FD7E14" font-size="13" font-weight="bold">1. Naranja (PWM) → GPIO 15</text>
+  <text x="1020" y="218" text-anchor="middle" fill="#E30613" font-size="13" font-weight="bold">2. Rojo (VCC) → 5V / VIN</text>
+  <text x="1020" y="240" text-anchor="middle" fill="#343A40" font-size="13" font-weight="bold">3. Café/Negro (GND) → GND</text>
+  <text x="1020" y="278" text-anchor="middle" fill="#E30613" font-size="12" font-weight="bold">0° = Cerrada | 90° = Abierta</text>
 
   <!-- LCD 1602 I2C Bottom Right -->
-  <rect x="885" y="360" width="270" height="220" rx="12" fill="#FFFFFF" stroke="#6F42C1" stroke-width="3"/>
+  <rect x="885" y="360" width="270" height="235" rx="12" fill="#FFFFFF" stroke="#6F42C1" stroke-width="3"/>
   <rect x="885" y="360" width="270" height="42" rx="10" fill="#6F42C1"/>
   <text x="1020" y="387" text-anchor="middle" fill="#FFFFFF" font-size="16" font-weight="bold">Display LCD 1602 I2C (0x27)</text>
-  <rect x="910" y="420" width="220" height="58" rx="6" fill="#0B3D2E" stroke="#198754" stroke-width="2"/>
-  <text x="1020" y="445" text-anchor="middle" fill="#7CFFB2" font-family="Consolas, monospace" font-size="15">L:11/12 D: 24cm</text>
-  <text x="1020" y="467" text-anchor="middle" fill="#7CFFB2" font-family="Consolas, monospace" font-size="15">LIBRE    90G AUT</text>
-  <text x="1020" y="510" text-anchor="middle" fill="#212529" font-size="13">SDA: GPIO 21 · SCL: GPIO 22</text>
-  <text x="1020" y="535" text-anchor="middle" fill="#212529" font-size="13">VCC: 5V · GND: GND Común</text>
+  <rect x="910" y="415" width="220" height="52" rx="6" fill="#0B3D2E" stroke="#198754" stroke-width="2"/>
+  <text x="1020" y="437" text-anchor="middle" fill="#7CFFB2" font-family="Consolas, monospace" font-size="14">L:11/12 D: 24cm</text>
+  <text x="1020" y="457" text-anchor="middle" fill="#7CFFB2" font-family="Consolas, monospace" font-size="14">LIBRE    90G AUT</text>
+  <text x="1020" y="492" text-anchor="middle" fill="#6F42C1" font-size="12" font-weight="bold">SDA: GPIO 21 · SCL: GPIO 22</text>
+  <text x="1020" y="512" text-anchor="middle" fill="#E30613" font-size="12" font-weight="bold">VCC: 5V (VIN)</text>
+  <text x="1020" y="532" text-anchor="middle" fill="#343A40" font-size="12" font-weight="bold">GND: Tierra Común</text>
 
   <!-- Wires Left -->
   <polyline points="315,295 440,295" fill="none" stroke="#E30613" stroke-width="4"/>
@@ -63,11 +64,20 @@
   <polyline points="315,445 440,445" fill="none" stroke="#198754" stroke-width="4"/>
 
   <!-- Wires Right -->
-  <polyline points="760,295 820,295 820,205 885,205" fill="none" stroke="#FD7E14" stroke-width="4"/>
-  <polyline points="760,385 885,435" fill="none" stroke="#6F42C1" stroke-width="4"/>
-  <polyline points="760,430 885,465" fill="none" stroke="#0DCAF0" stroke-width="4"/>
-  <polyline points="760,495 885,535" fill="none" stroke="#343A40" stroke-width="4"/>
-  <polyline points="760,495 845,495 845,232 885,232" fill="none" stroke="#343A40" stroke-width="3" stroke-dasharray="6,4"/>
+  <!-- 5V VCC Bus a SG90 y LCD (Rojo) -->
+  <polyline points="440,295 380,295 380,105 860,105 860,218 885,218" fill="none" stroke="#E30613" stroke-width="4"/>
+  <polyline points="860,218 860,512 885,512" fill="none" stroke="#E30613" stroke-width="4"/>
+
+  <!-- SG90 Señal PWM Naranja (GPIO 15) -->
+  <polyline points="760,295 820,295 820,195 885,195" fill="none" stroke="#FD7E14" stroke-width="4"/>
+
+  <!-- SG90 GND Café/Negro -->
+  <polyline points="760,495 840,495 840,240 885,240" fill="none" stroke="#343A40" stroke-width="4"/>
+
+  <!-- LCD I2C Bus -->
+  <polyline points="760,385 885,492" fill="none" stroke="#6F42C1" stroke-width="4"/>
+  <polyline points="760,430 885,492" fill="none" stroke="#0DCAF0" stroke-width="3" stroke-dasharray="6,3"/>
+  <polyline points="760,495 885,532" fill="none" stroke="#343A40" stroke-width="4"/>
 
   <!-- Footer Note -->
   <rect x="45" y="630" width="1110" height="58" rx="10" fill="#E9ECEF" stroke="#CED4DA" stroke-width="1.5"/>
