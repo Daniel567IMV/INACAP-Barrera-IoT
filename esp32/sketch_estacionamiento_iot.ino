@@ -232,7 +232,14 @@ void loop() {
 
   // 1B. Lectura no bloqueante por Wi-Fi TCP si ENABLE_WIFI_TCP == 1
 #if ENABLE_WIFI_TCP
+  static bool wifiConectadoPrevio = false;
   if (WiFi.status() == WL_CONNECTED) {
+    if (!wifiConectadoPrevio) {
+      wifiConectadoPrevio = true;
+      Serial.print("[WIFI] Conectado a la red! IP asignada: ");
+      Serial.println(WiFi.localIP());
+      Serial.printf("[WIFI] Servidor TCP escuchando en puerto %d\n", TCP_SERVER_PORT);
+    }
     if (!tcpClient || !tcpClient.connected()) {
       WiFiClient nuevo = tcpServer.available();
       if (nuevo) {
@@ -257,9 +264,12 @@ void loop() {
         }
       }
     }
-  } else if (ahoraMs - ultimoReintentoWifiMs >= 10000) {
-    ultimoReintentoWifiMs = ahoraMs;
-    WiFi.reconnect();
+  } else {
+    wifiConectadoPrevio = false;
+    if (ahoraMs - ultimoReintentoWifiMs >= 10000) {
+      ultimoReintentoWifiMs = ahoraMs;
+      WiFi.reconnect();
+    }
   }
 #endif
 
