@@ -33,7 +33,15 @@
 #endif
 
 #ifndef ENABLE_WIFI_TCP
-  #define ENABLE_WIFI_TCP 0
+  #define ENABLE_WIFI_TCP 1
+#endif
+
+#ifndef WIFI_SSID
+  #define WIFI_SSID "Daniel"
+#endif
+
+#ifndef WIFI_PASS
+  #define WIFI_PASS "lukas123456"
 #endif
 
 #ifndef TCP_SERVER_PORT
