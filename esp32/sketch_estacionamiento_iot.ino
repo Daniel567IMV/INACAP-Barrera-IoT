@@ -157,6 +157,24 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true);
   delay(100);
+
+  Serial.println("\n[WIFI DIAGNOSTICO] Escaneando redes Wi-Fi 2.4 GHz disponibles...");
+  int nRedes = WiFi.scanNetworks();
+  Serial.printf("[WIFI DIAGNOSTICO] Se detectaron %d redes:\n", nRedes);
+  bool redEncontrada = false;
+  for (int i = 0; i < nRedes; i++) {
+    Serial.printf("   %2d) SSID: '%s' | Señal: %d dBm | Canal: %d\n",
+                  i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i));
+    if (WiFi.SSID(i) == WIFI_SSID) redEncontrada = true;
+  }
+
+  if (!redEncontrada) {
+    Serial.printf("[WIFI ALERTA] La red '%s' NO fue detectada en 2.4 GHz!\n", WIFI_SSID);
+    Serial.println("[WIFI ALERTA] Causa común: el celular está emitiendo en 5 GHz. Cambiar a 2.4 GHz en ajustes de hotspot.");
+  } else {
+    Serial.printf("[WIFI INFO] Red '%s' localizada correctamente. Conectando...\n", WIFI_SSID);
+  }
+
   WiFi.setAutoReconnect(true);
   #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
     WiFi.setSleep(false);
@@ -165,15 +183,13 @@ void setup() {
 
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Conectando WiFi:");
+  lcd.print("WiFi: Conectando");
   lcd.setCursor(0, 1);
   lcd.print(WIFI_SSID);
 
-  Serial.printf("[WIFI] Conectando a red: '%s' (clave: '%s')...\n", WIFI_SSID, WIFI_PASS);
-
-  // Intentar conectar durante 10 segundos
+  // Intentar conectar durante 8 segundos
   unsigned long t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - t0 < 10000)) {
+  while (WiFi.status() != WL_CONNECTED && (millis() - t0 < 8000)) {
     delay(400);
     Serial.print(".");
   }
@@ -189,14 +205,14 @@ void setup() {
     lcd.print("WiFi Conectado!");
     lcd.setCursor(0, 1);
     lcd.print(WiFi.localIP().toString());
-    delay(4000); // Muestra la IP durante 4 segundos para que puedas ingresarla en la App
+    delay(3000);
   } else {
-    Serial.printf("[WIFI] No conectó aún (Estado: %d). Reintentando en loop...\n", (int)WiFi.status());
+    Serial.printf("[WIFI] No conectó en setup (Estado: %d). Seguirá reintentando en loop...\n", (int)WiFi.status());
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("WiFi reintentando");
     lcd.setCursor(0, 1);
-    lcd.print("Verificar 2.4GHz");
+    lcd.print(redEncontrada ? "Revisa clave" : "Banda 2.4GHz");
     delay(2000);
   }
 
@@ -336,12 +352,36 @@ void evaluarLogicaControl() {
   }
 }
 
-// Actualización LCD 1602 I2C
+// Actualización LCD 1602 I2C (Alterna cada 3 segundos entre telemetría e IP)
 void actualizarLcd() {
+  static unsigned long ultimoCambioLcd = 0;
+  static bool vistaAlterna = false;
+  unsigned long ahoraLcd = millis();
+
+  if (ahoraLcd - ultimoCambioLcd >= 3000) {
+    ultimoCambioLcd = ahoraLcd;
+    vistaAlterna = !vistaAlterna;
+  }
+
   char l1[17], l2[17];
-  snprintf(l1, sizeof(l1), "L:%2d/%2d D:%3ldcm", plazasLibres, capacidadTotal, distanciaCm);
-  const char* mStr = (modoOperacion == "MANUAL") ? "MAN" : "AUT";
-  snprintf(l2, sizeof(l2), "%-7s %2dG %3s", estadoParking.c_str(), anguloBarrera, mStr);
+  if (vistaAlterna) {
+#if ENABLE_WIFI_TCP
+    if (WiFi.status() == WL_CONNECTED) {
+      snprintf(l1, sizeof(l1), "WiFi CONECTADO  ");
+      snprintf(l2, sizeof(l2), "IP:%-13s", WiFi.localIP().toString().c_str());
+    } else {
+      snprintf(l1, sizeof(l1), "WiFi BUSCANDO   ");
+      snprintf(l2, sizeof(l2), "Red: %-11s", WIFI_SSID);
+    }
+#else
+    snprintf(l1, sizeof(l1), "BT: %-12s", BT_DEVICE_NAME);
+    snprintf(l2, sizeof(l2), "PIN: 4829       ");
+#endif
+  } else {
+    snprintf(l1, sizeof(l1), "L:%2d/%2d D:%3ldcm", plazasLibres, capacidadTotal, distanciaCm);
+    const char* mStr = (modoOperacion == "MANUAL") ? "MAN" : "AUT";
+    snprintf(l2, sizeof(l2), "%-7s %2dG %3s", estadoParking.c_str(), anguloBarrera, mStr);
+  }
 
   lcd.setCursor(0, 0);
   lcd.print(l1);
