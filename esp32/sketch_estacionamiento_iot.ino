@@ -195,9 +195,10 @@ void setup() {
 
 #if ENABLE_WIFI_TCP
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
   #ifdef WIFI_SSID
     WiFi.begin(WIFI_SSID, WIFI_PASS);
-    Serial.printf("[WIFI] Iniciando conexión no bloqueante a '%s' (puerto %d)...\n",
+    Serial.printf("[WIFI] Iniciando conexión a SSID '%s' (puerto %d)...\n",
                   WIFI_SSID, TCP_SERVER_PORT);
   #endif
   tcpServer.begin();
@@ -245,12 +246,14 @@ void loop() {
   // 1B. Lectura no bloqueante por Wi-Fi TCP si ENABLE_WIFI_TCP == 1
 #if ENABLE_WIFI_TCP
   static bool wifiConectadoPrevio = false;
-  if (WiFi.status() == WL_CONNECTED) {
+  wl_status_t wifiEstadoActual = WiFi.status();
+
+  if (wifiEstadoActual == WL_CONNECTED) {
     if (!wifiConectadoPrevio) {
       wifiConectadoPrevio = true;
-      Serial.print("[WIFI] Conectado a la red! IP asignada: ");
+      Serial.print("[WIFI] ¡Conectado exitosamente! IP asignada: ");
       Serial.println(WiFi.localIP());
-      Serial.printf("[WIFI] Servidor TCP escuchando en puerto %d\n", TCP_SERVER_PORT);
+      Serial.printf("[WIFI] Servidor TCP escuchando en %s:%d\n", WiFi.localIP().toString().c_str(), TCP_SERVER_PORT);
     }
     if (!tcpClient || !tcpClient.connected()) {
       WiFiClient nuevo = tcpServer.available();
@@ -278,9 +281,19 @@ void loop() {
     }
   } else {
     wifiConectadoPrevio = false;
-    if (ahoraMs - ultimoReintentoWifiMs >= 10000) {
+    if (ahoraMs - ultimoReintentoWifiMs >= 8000) {
       ultimoReintentoWifiMs = ahoraMs;
-      WiFi.reconnect();
+      const char* desc = "Conectando...";
+      if (wifiEstadoActual == WL_NO_SSID_AVAIL) {
+        desc = "SSID no encontrado (verificar banda 2.4 GHz o nombre de red)";
+      } else if (wifiEstadoActual == WL_CONNECT_FAILED) {
+        desc = "Fallo de autenticacion (verificar contrasena)";
+      } else if (wifiEstadoActual == WL_DISCONNECTED) {
+        desc = "Desconectado (asociando con router/hotspot...)";
+      }
+      Serial.printf("[WIFI] Estado actual: %d (%s) - Reintentando conexión a '%s'...\n",
+                    (int)wifiEstadoActual, desc, WIFI_SSID);
+      WiFi.begin(WIFI_SSID, WIFI_PASS);
     }
   }
 #endif
