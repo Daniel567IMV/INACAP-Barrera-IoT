@@ -153,10 +153,26 @@ void setup() {
   inicializarNvs();
 
 #if ENABLE_WIFI_TCP
-  // Modo Estación (STA): Conecta a la red Wi-Fi 'Daniel'
+  // Registrar eventos de depuración Wi-Fi
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
+      Serial.println("[WIFI EVENT] Conectado físicamente al Punto de Acceso.");
+    } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+      Serial.print("[WIFI EVENT] ¡IP obtenida exitosamente!: ");
+      Serial.println(WiFi.localIP());
+    } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+      uint8_t r = info.wifi_sta_disconnected.reason;
+      const char* mot = "Desconocido";
+      if (r == 201) mot = "SSID no encontrado (Red apagada o en 5 GHz)";
+      else if (r == 15 || r == 202) mot = "Contraseña incorrecta";
+      else if (r == 2) mot = "Autenticación expirada";
+      else if (r == 204) mot = "Handshake timeout (señal débil o WPA3 incompatible)";
+      Serial.printf("[WIFI EVENT] Desconectado. Motivo %d: %s\n", r, mot);
+    }
+  });
+
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect(true);
-  delay(100);
+  WiFi.setAutoReconnect(true);
 
   Serial.println("\n[WIFI DIAGNOSTICO] Escaneando redes Wi-Fi 2.4 GHz disponibles...");
   int nRedes = WiFi.scanNetworks();
@@ -175,10 +191,6 @@ void setup() {
     Serial.printf("[WIFI INFO] Red '%s' localizada correctamente. Conectando...\n", WIFI_SSID);
   }
 
-  WiFi.setAutoReconnect(true);
-  #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
-    WiFi.setSleep(false);
-  #endif
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   lcd.clear();
