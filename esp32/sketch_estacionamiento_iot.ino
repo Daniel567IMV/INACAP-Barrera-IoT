@@ -49,6 +49,7 @@
   WiFiServer tcpServer(TCP_SERVER_PORT);
   WiFiClient tcpClient;
   unsigned long ultimoReintentoWifiMs = 0;
+  const unsigned long INTERVALO_REINTENTO_WIFI_MS = 15000;
   String rxBufferTcp = "";
 #endif
 
@@ -164,14 +165,20 @@ void setup() {
       uint8_t r = info.wifi_sta_disconnected.reason;
       const char* mot = "Desconocido";
       if (r == 201) mot = "SSID no encontrado (Red apagada o en 5 GHz)";
-      else if (r == 15 || r == 202) mot = "Contraseña incorrecta";
+      else if (r == 15 || r == 202) mot = "Contraseña incorrecta o WPA3 incompatible";
       else if (r == 2) mot = "Autenticación expirada";
       else if (r == 204) mot = "Handshake timeout (señal débil o WPA3 incompatible)";
       Serial.printf("[WIFI EVENT] Desconectado. Motivo %d: %s\n", r, mot);
     }
   });
 
+  // Limpiar credenciales/estado Wi-Fi previo en flash
+  WiFi.persistent(false);
+  WiFi.disconnect(true, true);
+  delay(200);
+
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);         // Evita timeouts de handshake con hotspots móviles
   WiFi.setAutoReconnect(true);
 
   Serial.println("\n[WIFI DIAGNOSTICO] Escaneando redes Wi-Fi 2.4 GHz disponibles...");
@@ -179,10 +186,11 @@ void setup() {
   Serial.printf("[WIFI DIAGNOSTICO] Se detectaron %d redes:\n", nRedes);
   bool redEncontrada = false;
   for (int i = 0; i < nRedes; i++) {
-    Serial.printf("   %2d) SSID: '%s' | Señal: %d dBm | Canal: %d\n",
-                  i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i));
+    Serial.printf("   %2d) SSID: '%s' | Señal: %d dBm | Canal: %d | Auth: %d\n",
+                  i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i), (int)WiFi.encryptionType(i));
     if (WiFi.SSID(i) == WIFI_SSID) redEncontrada = true;
   }
+  WiFi.scanDelete();            // Libera memoria del escaneo
 
   if (!redEncontrada) {
     Serial.printf("[WIFI ALERTA] La red '%s' NO fue detectada en 2.4 GHz!\n", WIFI_SSID);
@@ -224,10 +232,11 @@ void setup() {
     lcd.setCursor(0, 0);
     lcd.print("WiFi reintentando");
     lcd.setCursor(0, 1);
-    lcd.print(redEncontrada ? "Revisa clave" : "Banda 2.4GHz");
+    lcd.print(redEncontrada ? "Revisa clave/WPA2" : "Banda 2.4GHz");
     delay(2000);
   }
 
+  ultimoReintentoWifiMs = millis();
   tcpServer.begin();
   tcpServer.setNoDelay(true);
 #endif
@@ -251,7 +260,7 @@ void setup() {
       .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
       .trigger_panic = true
     };
-    esp_task_wdt_init(&twdt_config);
+    esp_task_wdt_reconfigure(&twdt_config);
   #else
     esp_task_wdt_init(WDT_TIMEOUT_SECONDS, true);
   #endif
@@ -266,29 +275,34 @@ void loop() {
   unsigned long ahora = millis();
 
 #if ENABLE_WIFI_TCP
-  // Servidor TCP siempre activo en 192.168.4.1 y en la IP asignada
-  if (!tcpClient || !tcpClient.connected()) {
-    WiFiClient nuevo = tcpServer.available();
-    if (nuevo) {
-      tcpClient = nuevo;
-      tcpClient.setNoDelay(true);
-      Serial.println("[TCP] ¡App Android conectada exitosamente al servidor Wi-Fi!");
-    }
+  // Acepta nuevas conexiones de la App Android de forma limpia
+  if (tcpServer.hasClient()) {
+    if (tcpClient) tcpClient.stop();
+    tcpClient = tcpServer.accept();
+    tcpClient.setNoDelay(true);
+    Serial.println("[TCP] ¡App Android conectada exitosamente al servidor Wi-Fi!");
   }
+
   while (tcpClient && tcpClient.connected() && tcpClient.available()) {
     char c = (char)tcpClient.read();
     if (c == '\n') {
       rxBufferTcp.trim();
-      if (rxBufferTcp.length() > 0) procesarComando(rxBufferTcp);
+      if (rxBufferTcp.length() > 0) {
+        Serial.print("[TCP RX] ");
+        Serial.println(rxBufferTcp);
+        procesarComando(rxBufferTcp);
+      }
       rxBufferTcp = "";
     } else if (c != '\r' && rxBufferTcp.length() < 256) {
       rxBufferTcp += c;
     }
   }
 
-  // Reintento de asociación a red externa cada 10s si no está conectada
-  if (WiFi.status() != WL_CONNECTED && (ahora - ultimoReintentoWifiMs >= 10000)) {
+  // Reintento limpio cada 15s si se cae la red
+  if (WiFi.status() != WL_CONNECTED && (ahora - ultimoReintentoWifiMs >= INTERVALO_REINTENTO_WIFI_MS)) {
     ultimoReintentoWifiMs = ahora;
+    Serial.println("[WIFI] Reintentando conexión...");
+    WiFi.disconnect(false);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
   }
 #endif
@@ -434,57 +448,98 @@ void enviarTelemetria() {
   enviarLinea(t);
 }
 
+// ACK estructurado compatible con la App Android (AckFrame)
 void enviarAck(const String& cmd, const String& reqId, const String& detail) {
-  String a = "{\"ack\":\"" + cmd + "\",\"id\":\"" + reqId + "\",\"status\":\"OK\",\"detail\":\"" + detail + "\"}";
+  String a = "{\"type\":\"ACK\",\"cmd\":\"" + cmd + "\",\"reqId\":\"" + reqId + "\",\"detail\":\"" + detail + "\"}";
   enviarLinea(a);
 }
 
+// ERR estructurado compatible con la App Android (ErrFrame)
 void enviarErr(const String& code, const String& reqId, const String& detail) {
-  String e = "{\"error\":\"" + code + "\",\"id\":\"" + reqId + "\",\"detail\":\"" + detail + "\"}";
+  String e = "{\"type\":\"ERR\",\"code\":\"" + code + "\",\"reqId\":\"" + reqId + "\",\"detail\":\"" + detail + "\"}";
   enviarLinea(e);
 }
 
-// Procesador de comandos JSON recibidos desde Android
+// Procesador de comandos JSON recibidos desde la App Android
 void procesarComando(const String& json) {
   String cmd   = extraerJsonString(json, "cmd");
-  String reqId = extraerJsonString(json, "id");
-  if (reqId == "") reqId = "N/A";
+  String reqId = extraerJsonString(json, "reqId");
+  if (reqId == "") reqId = extraerJsonString(json, "id");
+  if (reqId == "") reqId = "REQ_0";
 
-  if (cmd == "ABRIR") {
+  int val = -1;
+  extraerJsonInt(json, "val", val);
+  if (val == -1) extraerJsonInt(json, "valor", val);
+
+  String modo = extraerJsonString(json, "modo");
+
+  // Comando de control de barrera (la app envía cmd="SET_BARRERA" con val=90 o val=0)
+  if (cmd == "SET_BARRERA" || cmd == "ABRIR" || cmd == "CERRAR") {
+    int angulo = val;
+    if (cmd == "ABRIR") angulo = 90;
+    if (cmd == "CERRAR") angulo = 0;
+    if (angulo < 0) angulo = 0;
+    if (angulo > 90) angulo = 90;
+
     modoOperacion = "MANUAL";
-    anguloBarrera = 90;
+    anguloBarrera = angulo;
     barreraServo.write(anguloBarrera);
-    enviarAck("ABRIR", reqId, "Barrera abierta a 90° (Modo MANUAL)");
+    enviarAck("SET_BARRERA", reqId, "Barrera posicionada en " + String(angulo) + "° (Modo MANUAL)");
   }
-  else if (cmd == "CERRAR") {
-    modoOperacion = "MANUAL";
-    anguloBarrera = 0;
-    barreraServo.write(anguloBarrera);
-    enviarAck("CERRAR", reqId, "Barrera cerrada a 0° (Modo MANUAL)");
+  // Comando de modo (la app envía cmd="SET_MODO" con modo="AUTO" o "MANUAL")
+  else if (cmd == "SET_MODO") {
+    if (modo == "AUTO" || modo == "MANUAL") {
+      modoOperacion = modo;
+      if (modoOperacion == "AUTO") evaluarLogicaControl();
+      enviarAck("SET_MODO", reqId, "Modo cambiado a " + modoOperacion);
+    } else {
+      enviarErr("INVALID_MODE", reqId, "Modo debe ser AUTO o MANUAL");
+    }
   }
   else if (cmd == "AUTO") {
     modoOperacion = "AUTO";
     evaluarLogicaControl();
-    enviarAck("AUTO", reqId, "Modo automático activado");
+    enviarAck("SET_MODO", reqId, "Modo automático activado");
   }
   else if (cmd == "MANUAL") {
     modoOperacion = "MANUAL";
-    enviarAck("MANUAL", reqId, "Modo manual activado");
+    enviarAck("SET_MODO", reqId, "Modo manual activado");
   }
+  // Solicitud de estado o ping
+  else if (cmd == "REQ_STATUS" || cmd == "PING") {
+    enviarAck(cmd, reqId, "STATUS_OK");
+    enviarTelemetria();
+  }
+  // Configuración de umbral del sensor (cm)
   else if (cmd == "SET_UMBRAL") {
-    int nuevoUmb = 0;
-    if (extraerJsonInt(json, "valor", nuevoUmb) && nuevoUmb >= 5 && nuevoUmb <= 150) {
-      umbralOcupacionCm = nuevoUmb;
+    if (val >= 5 && val <= 150) {
+      umbralOcupacionCm = val;
       enviarAck("SET_UMBRAL", reqId, "Umbral actualizado a " + String(umbralOcupacionCm) + " cm");
     } else {
       enviarErr("VAL_OUT_OF_RANGE", reqId, "Umbral debe estar entre 5 y 150 cm");
     }
   }
+  // Configuración de capacidad total y plazas
+  else if (cmd == "SET_CAPACIDAD") {
+    if (val >= 1 && val <= 200) {
+      capacidadTotal = val;
+      if (plazasLibres > capacidadTotal) plazasLibres = capacidadTotal;
+      enviarAck("SET_CAPACIDAD", reqId, "Capacidad fijada en " + String(capacidadTotal));
+    } else {
+      enviarErr("VAL_OUT_OF_RANGE", reqId, "Capacidad inválida");
+    }
+  }
+  else if (cmd == "SET_PLAZAS") {
+    if (val >= 0 && val <= capacidadTotal) {
+      plazasLibres = val;
+      enviarAck("SET_PLAZAS", reqId, "Plazas libres fijadas en " + String(plazasLibres));
+    } else {
+      enviarErr("VAL_OUT_OF_RANGE", reqId, "Plazas libres fuera de rango");
+    }
+  }
+  // Vaciado de registros offline NVS
   else if (cmd == "FLUSH_BUFFER") {
     flushNvsAlCliente(reqId);
-  }
-  else if (cmd == "PING") {
-    enviarAck("PING", reqId, "PONG_OK");
   }
   else {
     enviarErr("UNKNOWN_CMD", reqId, "Comando desconocido: " + cmd);
